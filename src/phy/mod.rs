@@ -173,15 +173,10 @@ pub trait RxDevice {
 }
 
 pub trait TxDevice {
-    type TxBuffer: AsRef<[u8]> + AsMut<[u8]>;
-
     /// Get a description of device limitations.
     fn limits(&self) -> DeviceLimits;
 
     /// Transmit a frame.
-    ///
-    /// It is expected that a `transmit` implementation would gain ownership of a buffer with
-    /// the requested length, provide it for emission, and schedule it to be read from
-    /// memory by the network device once it is dropped.
-    fn transmit(&mut self, timestamp: u64, length: usize) -> Result<Self::TxBuffer>;
+    fn transmit<F>(&mut self, timestamp: u64, length: usize, f: F) -> Result<()>
+        where F: FnOnce(&mut [u8]) -> Result<()>;
 }
