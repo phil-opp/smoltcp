@@ -388,15 +388,17 @@ impl<'a, 'b, 'c, 'x, TxDeviceT: TxDevice + 'a> TxInterface<'a, 'b, 'c, 'x, TxDev
     fn dispatch_ethernet<F>(&mut self, timestamp: u64, buffer_len: usize, f: F) -> Result<()>
             where F: FnOnce(EthernetFrame<&mut [u8]>) {
         let tx_len = EthernetFrame::<&[u8]>::buffer_len(buffer_len);
-        let mut tx_buffer = self.tx_device.transmit(timestamp, tx_len)?;
-        debug_assert!(tx_buffer.as_ref().len() == tx_len);
 
-        let mut frame = EthernetFrame::new(tx_buffer.as_mut());
-        frame.set_src_addr(self.inner.hardware_addr);
+        let &mut Self {ref mut tx_device, ref mut inner, ..} = self;
 
-        f(frame);
+        tx_device.transmit(timestamp, tx_len, |tx_buffer| {
+            debug_assert!(tx_buffer.as_ref().len() == tx_len);
+            let mut frame = EthernetFrame::new(tx_buffer.as_mut());
+            frame.set_src_addr(inner.hardware_addr);
 
-        Ok(())
+            f(frame);
+            Ok(())
+        })
     }
 
     fn lookup_hardware_addr(&mut self, timestamp: u64,
