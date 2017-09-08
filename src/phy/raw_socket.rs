@@ -5,7 +5,7 @@ use std::io;
 use std::os::unix::io::{RawFd, AsRawFd};
 
 use Result;
-use super::{sys, DeviceLimits, Device};
+use super::{sys, DeviceLimits, RxDevice, TxDevice};
 
 /// A socket that captures or transmits the complete frame.
 #[derive(Debug)]
@@ -36,8 +36,20 @@ impl RawSocket {
     }
 }
 
-impl Device for RawSocket {
-    type RxBuffer = Vec<u8>;
+impl RxDevice for RawSocket {
+   fn receive<T, F>(&mut self, _timestamp: u64, f: F) -> Result<T>
+    where
+        F: FnOnce(&[u8]) -> Result<T>,
+    {
+        let mut lower = self.lower.borrow_mut();
+        let mut buffer = vec![0; self.mtu];
+        let size = lower.recv(&mut buffer[..]).unwrap();
+        buffer.resize(size, 0);
+        f(&buffer)
+    }
+}
+
+impl TxDevice for RawSocket {
     type TxBuffer = TxBuffer;
 
     fn limits(&self) -> DeviceLimits {
@@ -45,14 +57,6 @@ impl Device for RawSocket {
             max_transmission_unit: self.mtu,
             ..DeviceLimits::default()
         }
-    }
-
-    fn receive(&mut self, _timestamp: u64) -> Result<Self::RxBuffer> {
-        let mut lower = self.lower.borrow_mut();
-        let mut buffer = vec![0; self.mtu];
-        let size = lower.recv(&mut buffer[..]).unwrap();
-        buffer.resize(size, 0);
-        Ok(buffer)
     }
 
     fn transmit(&mut self, _timestamp: u64, length: usize) -> Result<Self::TxBuffer> {

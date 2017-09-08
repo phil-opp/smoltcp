@@ -5,7 +5,7 @@ use std::io;
 use std::os::unix::io::{RawFd, AsRawFd};
 
 use {Error, Result};
-use super::{sys, DeviceLimits, Device};
+use super::{sys, DeviceLimits, RxDevice, TxDevice};
 
 /// A virtual Ethernet interface.
 #[derive(Debug)]
@@ -37,29 +37,33 @@ impl TapInterface {
     }
 }
 
-impl Device for TapInterface {
-    type RxBuffer = Vec<u8>;
+impl RxDevice for TapInterface {
+    fn receive<T, F>(&mut self, _timestamp: u64, f: F) -> Result<T>
+    where
+        F: FnOnce(&[u8]) -> Result<T>,
+    {
+        let mut lower = self.lower.borrow_mut();
+        let mut buffer = vec![0; self.mtu];
+        match lower.recv(&mut buffer[..]) {
+            Ok(size) => {
+                buffer.resize(size, 0);
+                f(&buffer)
+            }
+            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+                Err(Error::Exhausted)
+            }
+            Err(err) => panic!("{}", err)
+        }
+    }
+}
+
+impl TxDevice for TapInterface {
     type TxBuffer = TxBuffer;
 
     fn limits(&self) -> DeviceLimits {
         DeviceLimits {
             max_transmission_unit: self.mtu,
             ..DeviceLimits::default()
-        }
-    }
-
-    fn receive(&mut self, _timestamp: u64) -> Result<Self::RxBuffer> {
-        let mut lower = self.lower.borrow_mut();
-        let mut buffer = vec![0; self.mtu];
-        match lower.recv(&mut buffer[..]) {
-            Ok(size) => {
-                buffer.resize(size, 0);
-                Ok(buffer)
-            }
-            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
-                Err(Error::Exhausted)
-            }
-            Err(err) => panic!("{}", err)
         }
     }
 
