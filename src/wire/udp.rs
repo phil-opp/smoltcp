@@ -263,8 +263,8 @@ impl<'a> fmt::Display for Repr<'a> {
 
 use super::pretty_print::{PrettyPrint, PrettyIndent};
 
-impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
-    fn pretty_print(buffer: &AsRef<[u8]>, f: &mut fmt::Formatter,
+impl<'a> PrettyPrint for Packet<&'a [u8]> {
+    fn pretty_print(buffer: &[u8], f: &mut fmt::Formatter,
                     indent: &mut PrettyIndent) -> fmt::Result {
         match Packet::new_checked(buffer) {
             Err(err)   => write!(f, "{}({})\n", indent, err),
