@@ -1,5 +1,5 @@
 use core::cmp;
-use managed::{Managed, ManagedSlice};
+use managed::ManagedSlice;
 
 use {Error, Result};
 use super::Resettable;

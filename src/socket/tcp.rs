@@ -2,7 +2,6 @@
 // the parts of RFC 1122 that discuss TCP.
 
 use core::{cmp, fmt};
-use managed::Managed;
 
 use {Error, Result};
 use phy::DeviceLimits;
