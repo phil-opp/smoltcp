@@ -163,17 +163,8 @@ pub struct DeviceLimits {
     dummy: ()
 }
 
-/// An interface for sending and receiving raw network frames.
-///
-/// It is expected that a `Device` implementation would allocate memory for both sending
-/// and receiving packets from memory pools; hence, the stack borrows the buffer for a packet
-/// that it is about to receive, as well for a packet that it is about to send, from the device.
-pub trait Device {
+pub trait RxDevice {
     type RxBuffer: AsRef<[u8]>;
-    type TxBuffer: AsRef<[u8]> + AsMut<[u8]>;
-
-    /// Get a description of device limitations.
-    fn limits(&self) -> DeviceLimits;
 
     /// Receive a frame.
     ///
@@ -181,6 +172,13 @@ pub trait Device {
     /// through DMA, would gain ownership of the underlying buffer, provide it for parsing,
     /// and return it to the network device once it is dropped.
     fn receive(&mut self, timestamp: u64) -> Result<Self::RxBuffer>;
+}
+
+pub trait TxDevice {
+    type TxBuffer: AsRef<[u8]> + AsMut<[u8]>;
+
+    /// Get a description of device limitations.
+    fn limits(&self) -> DeviceLimits;
 
     /// Transmit a frame.
     ///
