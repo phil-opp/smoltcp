@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::vec::Vec;
 use std::rc::Rc;
 use std::io;
 use std::os::unix::io::{RawFd, AsRawFd};
@@ -50,8 +49,6 @@ impl RxDevice for RawSocket {
 }
 
 impl TxDevice for RawSocket {
-    type TxBuffer = TxBuffer;
-
     fn limits(&self) -> DeviceLimits {
         DeviceLimits {
             max_transmission_unit: self.mtu,
@@ -59,31 +56,12 @@ impl TxDevice for RawSocket {
         }
     }
 
-    fn transmit(&mut self, _timestamp: u64, length: usize) -> Result<Self::TxBuffer> {
-        Ok(TxBuffer {
-            lower:  self.lower.clone(),
-            buffer: vec![0; length]
-        })
-    }
-}
-
-#[doc(hidden)]
-pub struct TxBuffer {
-    lower:  Rc<RefCell<sys::RawSocketDesc>>,
-    buffer: Vec<u8>
-}
-
-impl AsRef<[u8]> for TxBuffer {
-    fn as_ref(&self) -> &[u8] { self.buffer.as_ref() }
-}
-
-impl AsMut<[u8]> for TxBuffer {
-    fn as_mut(&mut self) -> &mut [u8] { self.buffer.as_mut() }
-}
-
-impl Drop for TxBuffer {
-    fn drop(&mut self) {
-        let mut lower = self.lower.borrow_mut();
-        lower.send(&mut self.buffer[..]).unwrap();
+    fn transmit<F>(&mut self, _timestamp: u64, length: usize, f: F) -> Result<()>
+        where F: FnOnce(&mut [u8]) -> Result<()>
+    {
+        let mut buffer = vec![0; length];
+        f(&mut buffer)?;
+        self.lower.borrow_mut().send(&mut buffer[..]).unwrap();
+        Ok(())
     }
 }
