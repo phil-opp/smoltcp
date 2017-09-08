@@ -1,3 +1,8 @@
+#[cfg(feature = "std")]
+use std::vec::Vec;
+#[cfg(feature = "alloc")]
+use alloc::Vec;
+
 use {Error, Result};
 use super::{DeviceLimits, RxDevice, TxDevice};
 
@@ -183,22 +188,16 @@ impl<D> FaultInjector<D> {
     }
 }
 
-impl<D: RxDevice> RxDevice for FaultInjector<D> where D::RxBuffer: AsMut<[u8]> {
-    type RxBuffer = D::RxBuffer;
-
-    fn receive<T, F>(&mut self, timestamp: u64, f: F) -> Result<T> where F: FnOnce(Self::RxBuffer) -> Result<T> {
+impl<D: RxDevice> RxDevice for FaultInjector<D> {
+    fn receive<T, F>(&mut self, timestamp: u64, f: F) -> Result<T> where F: FnOnce(&[u8]) -> Result<T> {
         let &mut Self { ref mut inner, ref config, ref mut state, ..} = self;
 
-        inner.receive(timestamp, |mut buffer| {
+        inner.receive(timestamp, |buffer| {
             if state.maybe(config.drop_pct) {
                 net_trace!("rx: randomly dropping a packet");
                 return Err(Error::Exhausted)
             }
-            if state.maybe(config.corrupt_pct) {
-                net_trace!("rx: randomly corrupting a packet");
-                state.corrupt(&mut buffer)
-            }
-            if config.max_size > 0 && buffer.as_ref().len() > config.max_size {
+            if config.max_size > 0 && buffer.len() > config.max_size {
                 net_trace!("rx: dropping a packet that is too large");
                 return Err(Error::Exhausted)
             }
@@ -206,8 +205,14 @@ impl<D: RxDevice> RxDevice for FaultInjector<D> where D::RxBuffer: AsMut<[u8]> {
                 net_trace!("rx: dropping a packet because of rate limiting");
                 return Err(Error::Exhausted)
             }
-
-            f(buffer)
+            if state.maybe(config.corrupt_pct) {
+                net_trace!("rx: randomly corrupting a packet");
+                let mut corrupted_buffer = Vec::from(buffer);
+                state.corrupt(&mut corrupted_buffer);
+                f(&corrupted_buffer)
+            } else {
+                f(buffer)
+            }
         })
     }
 }
