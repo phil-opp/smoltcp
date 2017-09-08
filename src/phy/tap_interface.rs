@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::io;
 use std::os::unix::io::{RawFd, AsRawFd};
+use std::vec::Vec;
 
 use {Error, Result};
 use super::{sys, DeviceLimits, RxDevice, TxDevice};
@@ -37,16 +38,18 @@ impl TapInterface {
 }
 
 impl RxDevice for TapInterface {
+    type RxBuffer = Vec<u8>;
+
     fn receive<T, F>(&mut self, _timestamp: u64, f: F) -> Result<T>
     where
-        F: FnOnce(&[u8]) -> Result<T>,
+        F: FnOnce(Self::RxBuffer) -> Result<T>,
     {
         let mut lower = self.lower.borrow_mut();
         let mut buffer = vec![0; self.mtu];
         match lower.recv(&mut buffer[..]) {
             Ok(size) => {
                 buffer.resize(size, 0);
-                f(&buffer)
+                f(buffer)
             }
             Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
                 Err(Error::Exhausted)
@@ -69,7 +72,7 @@ impl TxDevice for TapInterface {
     {
         let mut buffer = vec![0; length];
         f(&mut buffer)?;
-        self.lower.borrow_mut().send(&mut buffer[..]).unwrap();
+        self.lower.borrow_mut().send(&buffer).unwrap();
         Ok(())
     }
 }

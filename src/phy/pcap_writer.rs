@@ -129,15 +129,17 @@ impl<D, S: PcapSink + Clone> PcapWriter<D, S> {
 }
 
 impl<D: RxDevice, S: PcapSink + Clone> RxDevice for PcapWriter<D, S> {
+    type RxBuffer = D::RxBuffer;
+
     fn receive<T, F>(&mut self, timestamp: u64, f: F) -> Result<T>
     where
-        F: FnOnce(&[u8]) -> Result<T>,
+        F: FnOnce(Self::RxBuffer) -> Result<T>,
     {
         let &mut Self {ref mut lower, ref mut sink, mode} = self;
-        let f = |buffer: &[u8]| {
+        let f = |buffer: D::RxBuffer| {
             match mode {
                 PcapMode::Both | PcapMode::RxOnly =>
-                    sink.packet(timestamp, buffer),
+                    sink.packet(timestamp, buffer.as_ref()),
                 PcapMode::TxOnly => ()
             }
             f(buffer)
@@ -156,7 +158,7 @@ impl<D: TxDevice, S: PcapSink + Clone> TxDevice for PcapWriter<D, S> {
         lower.transmit(timestamp, length, |buffer| {
             match mode {
                 PcapMode::Both | PcapMode::TxOnly =>
-                    sink.packet(timestamp, buffer),
+                    sink.packet(timestamp, buffer.as_ref()),
                 PcapMode::RxOnly => ()
             };
             f(buffer)

@@ -25,12 +25,14 @@ impl<D, P: PrettyPrint> Tracer<D, P> {
 }
 
 impl<D: RxDevice, P: PrettyPrint> RxDevice for Tracer<D, P> {
+    type RxBuffer = D::RxBuffer;
+
     fn receive<T, F>(&mut self, timestamp: u64, f: F) -> Result<T>
     where
-        F: FnOnce(&[u8]) -> Result<T>,
+        F: FnOnce(Self::RxBuffer) -> Result<T>,
     {
         let &mut Self {ref mut inner, ref mut writer} = self;
-        let f = |buffer: &[u8]| {
+        let f = |buffer: D::RxBuffer| {
             writer(timestamp, PrettyPrinter::<P>::new("<- ", &buffer));
             f(buffer)
         };

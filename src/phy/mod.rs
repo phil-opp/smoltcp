@@ -164,12 +164,13 @@ pub struct DeviceLimits {
 }
 
 pub trait RxDevice {
+    type RxBuffer: AsRef<[u8]>;
     /// Receive a frame.
     ///
     /// It is expected that a `receive` implementation, once a packet is written to memory
     /// through DMA, would gain ownership of the underlying buffer, provide it for parsing,
     /// and return it to the network device once it is dropped.
-    fn receive<T, F>(&mut self, timestamp: u64, f: F) -> Result<T> where F: FnOnce(&[u8]) -> Result<T>;
+    fn receive<T, F>(&mut self, timestamp: u64, f: F) -> Result<T> where F: FnOnce(Self::RxBuffer) -> Result<T>;
 }
 
 pub trait TxDevice {

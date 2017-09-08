@@ -537,7 +537,7 @@ impl<'a, 'b, 'c, RxDeviceT: RxDevice + 'a, TxDeviceT: TxDevice + 'a> Interface<'
 
         let mut processed_any = false;
         loop {
-            let process = |frame: &[u8]| {
+            let process = |frame| {
                 let response = inner.process_ethernet(sockets, timestamp, &frame);
                 let mut tx = TxInterface { tx_device, inner };
                 match response {
