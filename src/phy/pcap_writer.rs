@@ -5,7 +5,7 @@ use std::io::Write;
 use byteorder::{ByteOrder, NativeEndian};
 
 use Result;
-use super::{DeviceLimits, Device};
+use super::{DeviceLimits, RxDevice, TxDevice};
 
 enum_with_unknown! {
     /// Captured packet header type.
@@ -114,13 +114,13 @@ impl<T: AsMut<Write>> PcapSink for RefCell<T> {
 /// [libpcap]: https://wiki.wireshark.org/Development/LibpcapFileFormat
 /// [sink]: trait.PcapSink.html
 #[derive(Debug)]
-pub struct PcapWriter<D: Device, S: PcapSink + Clone> {
+pub struct PcapWriter<D, S: PcapSink + Clone> {
     lower: D,
     sink:  S,
     mode:  PcapMode
 }
 
-impl<D: Device, S: PcapSink + Clone> PcapWriter<D, S> {
+impl<D, S: PcapSink + Clone> PcapWriter<D, S> {
     /// Creates a packet capture writer.
     pub fn new(lower: D, sink: S, mode: PcapMode, link_type: PcapLinkType) -> PcapWriter<D, S> {
         sink.global_header(link_type);
@@ -128,53 +128,38 @@ impl<D: Device, S: PcapSink + Clone> PcapWriter<D, S> {
     }
 }
 
-impl<D: Device, S: PcapSink + Clone> Device for PcapWriter<D, S> {
-    type RxBuffer = D::RxBuffer;
-    type TxBuffer = TxBuffer<D::TxBuffer, S>;
-
-    fn limits(&self) -> DeviceLimits { self.lower.limits() }
-
-    fn receive(&mut self, timestamp: u64) -> Result<Self::RxBuffer> {
-        let buffer = self.lower.receive(timestamp)?;
-        match self.mode {
-            PcapMode::Both | PcapMode::RxOnly =>
-                self.sink.packet(timestamp, buffer.as_ref()),
-            PcapMode::TxOnly => ()
-        }
+impl<D: RxDevice, S: PcapSink + Clone> RxDevice for PcapWriter<D, S> {
+    fn receive<T, F>(&mut self, timestamp: u64, f: F) -> Result<T>
+    where
+        F: FnOnce(&[u8]) -> Result<T>,
+    {
+        let &mut Self {ref mut lower, ref mut sink, mode} = self;
+        let f = |buffer: &[u8]| {
+            match mode {
+                PcapMode::Both | PcapMode::RxOnly =>
+                    sink.packet(timestamp, buffer),
+                PcapMode::TxOnly => ()
+            }
+            f(buffer)
+        };
+        let buffer = lower.receive(timestamp, f)?;
         Ok(buffer)
     }
-
-    fn transmit(&mut self, timestamp: u64, length: usize) -> Result<Self::TxBuffer> {
-        let buffer = self.lower.transmit(timestamp, length)?;
-        Ok(TxBuffer { buffer, timestamp, sink: self.sink.clone(), mode: self.mode })
-    }
 }
+impl<D: TxDevice, S: PcapSink + Clone> TxDevice for PcapWriter<D, S> {
+    fn limits(&self) -> DeviceLimits { self.lower.limits() }
 
-#[doc(hidden)]
-pub struct TxBuffer<B: AsRef<[u8]> + AsMut<[u8]>, S: PcapSink> {
-    buffer:    B,
-    timestamp: u64,
-    sink:      S,
-    mode:      PcapMode
-}
-
-impl<B, S> AsRef<[u8]> for TxBuffer<B, S>
-        where B: AsRef<[u8]> + AsMut<[u8]>, S: PcapSink {
-    fn as_ref(&self) -> &[u8] { self.buffer.as_ref() }
-}
-
-impl<B, S> AsMut<[u8]> for TxBuffer<B, S>
-        where B: AsRef<[u8]> + AsMut<[u8]>, S: PcapSink {
-    fn as_mut(&mut self) -> &mut [u8] { self.buffer.as_mut() }
-}
-
-impl<B, S> Drop for TxBuffer<B, S>
-        where B: AsRef<[u8]> + AsMut<[u8]>, S: PcapSink {
-    fn drop(&mut self) {
-        match self.mode {
-            PcapMode::Both | PcapMode::TxOnly =>
-                self.sink.packet(self.timestamp, self.as_ref()),
-            PcapMode::RxOnly => ()
-        }
+    fn transmit<F>(&mut self, timestamp: u64, length: usize, f: F) -> Result<()>
+        where F: FnOnce(&mut [u8]) -> Result<()>
+    {
+        let &mut Self {ref mut lower, ref mut sink, mode} = self;
+        lower.transmit(timestamp, length, |buffer| {
+            match mode {
+                PcapMode::Both | PcapMode::TxOnly =>
+                    sink.packet(timestamp, buffer),
+                PcapMode::RxOnly => ()
+            };
+            f(buffer)
+        })
     }
 }
