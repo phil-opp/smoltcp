@@ -4,7 +4,7 @@
 use managed::{Managed, ManagedSlice};
 
 use {Error, Result};
-use phy::Device;
+use phy::{RxDevice, TxDevice};
 use wire::{EthernetAddress, EthernetProtocol, EthernetFrame};
 use wire::{ArpPacket, ArpRepr, ArpOperation};
 use wire::{Ipv4Packet, Ipv4Repr};
@@ -19,11 +19,21 @@ use super::ArpCache;
 /// The network interface logically owns a number of other data structures; to avoid
 /// a dependency on heap allocation, it instead owns a `BorrowMut<[T]>`, which can be
 /// a `&mut [T]`, or `Vec<T>` if a heap is available.
-pub struct Interface<'a, 'b, 'c, DeviceT: Device + 'a> {
-    device:         Managed<'a, DeviceT>,
+pub struct Interface<'a, 'b, 'c, RxDeviceT: RxDevice + 'a, TxDeviceT: TxDevice + 'a> {
+    rx_device:  Managed<'a, RxDeviceT>,
+    tx_device:  Managed<'a, TxDeviceT>,
+    inner:      InterfaceInner<'b, 'c>,
+}
+
+struct InterfaceInner<'b, 'c> {
     arp_cache:      Managed<'b, ArpCache>,
     hardware_addr:  EthernetAddress,
     protocol_addrs: ManagedSlice<'c, IpAddress>,
+}
+
+struct TxInterface<'a: 'x, 'b: 'x, 'c: 'x, 'x, TxDeviceT: TxDevice + 'a> {
+    tx_device: &'x mut Managed<'a, TxDeviceT>,
+    inner: &'x mut InterfaceInner<'b, 'c>,
 }
 
 enum Packet<'a> {
@@ -35,27 +45,24 @@ enum Packet<'a> {
     Tcp((IpRepr, TcpRepr<'a>))
 }
 
-impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
+impl<'b, 'c> InterfaceInner<'b, 'c> {
     /// Create a network interface using the provided network device.
     ///
     /// # Panics
     /// See the restrictions on [set_hardware_addr](#method.set_hardware_addr)
     /// and [set_protocol_addrs](#method.set_protocol_addrs) functions.
-    pub fn new<DeviceMT, ArpCacheMT, ProtocolAddrsMT>
-              (device: DeviceMT, arp_cache: ArpCacheMT,
+    pub fn new<ArpCacheMT, ProtocolAddrsMT>
+              (arp_cache: ArpCacheMT,
                hardware_addr: EthernetAddress, protocol_addrs: ProtocolAddrsMT) ->
-              Interface<'a, 'b, 'c, DeviceT>
-            where DeviceMT: Into<Managed<'a, DeviceT>>,
-                  ArpCacheMT: Into<Managed<'b, ArpCache>>,
+              InterfaceInner<'b, 'c>
+            where ArpCacheMT: Into<Managed<'b, ArpCache>>,
                   ProtocolAddrsMT: Into<ManagedSlice<'c, IpAddress>>, {
-        let device = device.into();
         let arp_cache = arp_cache.into();
         let protocol_addrs = protocol_addrs.into();
 
         Self::check_hardware_addr(&hardware_addr);
         Self::check_protocol_addrs(&protocol_addrs);
-        Interface {
-            device:         device,
+        InterfaceInner {
             arp_cache:      arp_cache,
             hardware_addr:  hardware_addr,
             protocol_addrs: protocol_addrs,
@@ -68,20 +75,6 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
         }
     }
 
-    /// Get the hardware address of the interface.
-    pub fn hardware_addr(&self) -> EthernetAddress {
-        self.hardware_addr
-    }
-
-    /// Set the hardware address of the interface.
-    ///
-    /// # Panics
-    /// This function panics if the address is not unicast.
-    pub fn set_hardware_addr(&mut self, addr: EthernetAddress) {
-        self.hardware_addr = addr;
-        Self::check_hardware_addr(&self.hardware_addr);
-    }
-
     fn check_protocol_addrs(addrs: &[IpAddress]) {
         for addr in addrs {
             if !addr.is_unicast() {
@@ -90,115 +83,10 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
         }
     }
 
-    /// Get the protocol addresses of the interface.
-    pub fn protocol_addrs(&self) -> &[IpAddress] {
-        self.protocol_addrs.as_ref()
-    }
-
-    /// Update the protocol addresses of the interface.
-    ///
-    /// # Panics
-    /// This function panics if any of the addresses is not unicast.
-    pub fn update_protocol_addrs<F: FnOnce(&mut ManagedSlice<'c, IpAddress>)>(&mut self, f: F) {
-        f(&mut self.protocol_addrs);
-        Self::check_protocol_addrs(&self.protocol_addrs)
-    }
-
     /// Check whether the interface has the given protocol address assigned.
     pub fn has_protocol_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
         let addr = addr.into();
         self.protocol_addrs.iter().any(|&probe| probe == addr)
-    }
-
-    /// Transmit packets queued in the given sockets, and receive packets queued
-    /// in the device.
-    ///
-    /// The timestamp must be a number of milliseconds, monotonically increasing
-    /// since an arbitrary moment in time, such as system startup.
-    ///
-    /// This function returns a _soft deadline_ for calling it the next time.
-    /// That is, if `iface.poll(&mut sockets, 1000)` returns `Ok(Some(2000))`,
-    /// it harmless (but wastes energy) to call it 500 ms later, and potentially
-    /// harmful (impacting quality of service) to call it 1500 ms later.
-    pub fn poll(&mut self, sockets: &mut SocketSet, timestamp: u64) -> Result<Option<u64>> {
-        self.socket_egress(sockets, timestamp)?;
-
-        if self.socket_ingress(sockets, timestamp)? {
-            Ok(Some(0))
-        } else {
-            Ok(sockets.iter().filter_map(|socket| socket.poll_at()).min())
-        }
-    }
-
-    fn socket_ingress(&mut self, sockets: &mut SocketSet, timestamp: u64) -> Result<bool> {
-        let mut processed_any = false;
-        loop {
-            let frame =
-                match self.device.receive(timestamp) {
-                    Ok(frame) => frame,
-                    Err(Error::Exhausted) => break, // nothing to receive
-                    Err(err) => return Err(err)
-                };
-
-            let response =
-                match self.process_ethernet(sockets, timestamp, &frame) {
-                    Ok(response) => response,
-                    Err(err) => {
-                        net_debug!("cannot process ingress packet: {}", err);
-                        return Err(err)
-                    }
-                };
-            processed_any = true;
-
-            match self.dispatch(timestamp, response) {
-                Ok(()) => (),
-                Err(err) => {
-                    net_debug!("cannot dispatch response packet: {}", err);
-                    return Err(err)
-                }
-            }
-        }
-        Ok(processed_any)
-    }
-
-    fn socket_egress(&mut self, sockets: &mut SocketSet, timestamp: u64) -> Result<()> {
-        let mut limits = self.device.limits();
-        limits.max_transmission_unit -= EthernetFrame::<&[u8]>::header_len();
-
-        for socket in sockets.iter_mut() {
-            let mut device_result = Ok(());
-            let socket_result =
-                match socket {
-                    &mut Socket::Raw(ref mut socket) =>
-                        socket.dispatch(|response| {
-                            device_result = self.dispatch(timestamp, Packet::Raw(response));
-                            device_result
-                        }),
-                    &mut Socket::Udp(ref mut socket) =>
-                        socket.dispatch(|response| {
-                            device_result = self.dispatch(timestamp, Packet::Udp(response));
-                            device_result
-                        }),
-                    &mut Socket::Tcp(ref mut socket) =>
-                        socket.dispatch(timestamp, &limits, |response| {
-                            device_result = self.dispatch(timestamp, Packet::Tcp(response));
-                            device_result
-                        }),
-                    &mut Socket::__Nonexhaustive => unreachable!()
-                };
-            match (device_result, socket_result) {
-                (Err(Error::Unaddressable), _) => break, // no one to transmit to
-                (Err(Error::Exhausted), _) => break,     // nowhere to transmit
-                (Ok(()), Err(Error::Exhausted)) => (),   // nothing to transmit
-                (Err(err), _) | (_, Err(err)) => {
-                    net_debug!("cannot dispatch egress packet: {}", err);
-                    return Err(err)
-                }
-                (Ok(()), Ok(())) => ()
-            }
-        }
-
-        Ok(())
     }
 
     fn process_ethernet<'frame, T: AsRef<[u8]>>
@@ -431,7 +319,9 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
             Ok(Packet::Tcp(TcpSocket::rst_reply(&ip_repr, &tcp_repr)))
         }
     }
+}
 
+impl<'a, 'b, 'c, 'x, TxDeviceT: TxDevice + 'a> TxInterface<'a, 'b, 'c, 'x, TxDeviceT> {
     fn dispatch(&mut self, timestamp: u64, packet: Packet) -> Result<()> {
         match packet {
             Packet::Arp(arp_repr) => {
@@ -466,7 +356,7 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
                 })
             }
             Packet::Tcp((ip_repr, mut tcp_repr)) => {
-                let limits = self.device.limits();
+                let limits = self.tx_device.limits();
                 self.dispatch_ip(timestamp, ip_repr, |ip_repr, payload| {
                     // This is a terrible hack to make TCP performance more acceptable on systems
                     // where the TCP buffers are significantly larger than network buffers,
@@ -498,11 +388,11 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
     fn dispatch_ethernet<F>(&mut self, timestamp: u64, buffer_len: usize, f: F) -> Result<()>
             where F: FnOnce(EthernetFrame<&mut [u8]>) {
         let tx_len = EthernetFrame::<&[u8]>::buffer_len(buffer_len);
-        let mut tx_buffer = self.device.transmit(timestamp, tx_len)?;
+        let mut tx_buffer = self.tx_device.transmit(timestamp, tx_len)?;
         debug_assert!(tx_buffer.as_ref().len() == tx_len);
 
         let mut frame = EthernetFrame::new(tx_buffer.as_mut());
-        frame.set_src_addr(self.hardware_addr);
+        frame.set_src_addr(self.inner.hardware_addr);
 
         f(frame);
 
@@ -512,7 +402,7 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
     fn lookup_hardware_addr(&mut self, timestamp: u64,
                             src_addr: &IpAddress, dst_addr: &IpAddress) ->
                            Result<EthernetAddress> {
-        if let Some(hardware_addr) = self.arp_cache.lookup(dst_addr) {
+        if let Some(hardware_addr) = self.inner.arp_cache.lookup(dst_addr) {
             return Ok(hardware_addr)
         }
 
@@ -527,7 +417,7 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
 
                 let arp_repr = ArpRepr::EthernetIpv4 {
                     operation: ArpOperation::Request,
-                    source_hardware_addr: self.hardware_addr,
+                    source_hardware_addr: self.inner.hardware_addr,
                     source_protocol_addr: src_addr,
                     target_hardware_addr: EthernetAddress([0xff; 6]),
                     target_protocol_addr: dst_addr,
@@ -548,7 +438,7 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
 
     fn dispatch_ip<F>(&mut self, timestamp: u64, ip_repr: IpRepr, f: F) -> Result<()>
             where F: FnOnce(IpRepr, &mut [u8]) {
-        let ip_repr = ip_repr.lower(&self.protocol_addrs)?;
+        let ip_repr = ip_repr.lower(&self.inner.protocol_addrs)?;
 
         let dst_hardware_addr =
             self.lookup_hardware_addr(timestamp, &ip_repr.src_addr(), &ip_repr.dst_addr())?;
@@ -565,5 +455,152 @@ impl<'a, 'b, 'c, DeviceT: Device + 'a> Interface<'a, 'b, 'c, DeviceT> {
             let payload = &mut frame.payload_mut()[ip_repr.buffer_len()..];
             f(ip_repr, payload)
         })
+    }
+}
+
+impl<'a, 'b, 'c, RxDeviceT: RxDevice + 'a, TxDeviceT: TxDevice + 'a> Interface<'a, 'b, 'c, RxDeviceT, TxDeviceT> {
+    /// Create a network interface using the provided network device.
+    ///
+    /// # Panics
+    /// See the restrictions on [set_hardware_addr](#method.set_hardware_addr)
+    /// and [set_protocol_addrs](#method.set_protocol_addrs) functions.
+    pub fn new<RxDeviceMT, TxDeviceMT, ArpCacheMT, ProtocolAddrsMT>
+              (rx_device: RxDeviceMT, tx_device: TxDeviceMT, arp_cache: ArpCacheMT,
+               hardware_addr: EthernetAddress, protocol_addrs: ProtocolAddrsMT) ->
+              Interface<'a, 'b, 'c, RxDeviceT, TxDeviceT>
+            where RxDeviceMT: Into<Managed<'a, RxDeviceT>>,
+                  TxDeviceMT: Into<Managed<'a, TxDeviceT>>,
+                  ArpCacheMT: Into<Managed<'b, ArpCache>>,
+                  ProtocolAddrsMT: Into<ManagedSlice<'c, IpAddress>>, {
+        let rx_device = rx_device.into();
+        let tx_device = tx_device.into();
+
+        Interface {
+            rx_device,
+            tx_device,
+            inner:  InterfaceInner::new(arp_cache, hardware_addr, protocol_addrs),
+        }
+    }
+
+    /// Get the hardware address of the interface.
+    pub fn hardware_addr(&self) -> EthernetAddress {
+        self.inner.hardware_addr
+    }
+
+    /// Set the hardware address of the interface.
+    ///
+    /// # Panics
+    /// This function panics if the address is not unicast.
+    pub fn set_hardware_addr(&mut self, addr: EthernetAddress) {
+        self.inner.hardware_addr = addr;
+        InterfaceInner::check_hardware_addr(&self.inner.hardware_addr);
+    }
+
+    /// Get the protocol addresses of the interface.
+    pub fn protocol_addrs(&self) -> &[IpAddress] {
+        self.inner.protocol_addrs.as_ref()
+    }
+
+    /// Update the protocol addresses of the interface.
+    ///
+    /// # Panics
+    /// This function panics if any of the addresses is not unicast.
+    pub fn update_protocol_addrs<F: FnOnce(&mut ManagedSlice<'c, IpAddress>)>(&mut self, f: F) {
+        f(&mut self.inner.protocol_addrs);
+        InterfaceInner::check_protocol_addrs(&self.inner.protocol_addrs)
+    }
+
+    /// Transmit packets queued in the given sockets, and receive packets queued
+    /// in the device.
+    ///
+    /// The timestamp must be a number of milliseconds, monotonically increasing
+    /// since an arbitrary moment in time, such as system startup.
+    ///
+    /// This function returns a _soft deadline_ for calling it the next time.
+    /// That is, if `iface.poll(&mut sockets, 1000)` returns `Ok(Some(2000))`,
+    /// it harmless (but wastes energy) to call it 500 ms later, and potentially
+    /// harmful (impacting quality of service) to call it 1500 ms later.
+    pub fn poll(&mut self, sockets: &mut SocketSet, timestamp: u64) -> Result<Option<u64>> {
+        self.socket_egress(sockets, timestamp)?;
+
+        if self.socket_ingress(sockets, timestamp)? {
+            Ok(Some(0))
+        } else {
+            Ok(sockets.iter().filter_map(|socket| socket.poll_at()).min())
+        }
+    }
+
+    fn socket_ingress(&mut self, sockets: &mut SocketSet, timestamp: u64) -> Result<bool> {
+        let &mut Self {ref mut rx_device, ref mut tx_device, ref mut inner} = self;
+
+        let mut processed_any = false;
+        loop {
+            let process = |frame: &[u8]| {
+                let response = inner.process_ethernet(sockets, timestamp, &frame);
+                let mut tx = TxInterface { tx_device, inner };
+                match response {
+                    Err(err) => {
+                        net_debug!("cannot process ingress packet: {}", err);
+                        Err(err)
+                    }
+                    Ok(response) => match tx.dispatch(timestamp, response) {
+                        Ok(()) => Ok(()),
+                        Err(err) => {
+                            net_debug!("cannot dispatch response packet: {}", err);
+                            return Err(err)
+                        }
+                    }
+                }
+            };
+            match rx_device.receive(timestamp, process) {
+                Ok(()) => {},
+                Err(Error::Exhausted) => break, // nothing to receive
+                Err(err) => return Err(err),
+            };
+            processed_any = true;
+        }
+        Ok(processed_any)
+    }
+
+    fn socket_egress(&mut self, sockets: &mut SocketSet, timestamp: u64) -> Result<()> {
+        let mut limits = self.tx_device.limits();
+        limits.max_transmission_unit -= EthernetFrame::<&[u8]>::header_len();
+
+        let mut tx = TxInterface { tx_device: &mut self.tx_device, inner: &mut self.inner };
+
+        for socket in sockets.iter_mut() {
+            let mut device_result = Ok(());
+            let socket_result =
+                match socket {
+                    &mut Socket::Raw(ref mut socket) =>
+                        socket.dispatch(|response| {
+                            device_result = tx.dispatch(timestamp, Packet::Raw(response));
+                            device_result
+                        }),
+                    &mut Socket::Udp(ref mut socket) =>
+                        socket.dispatch(|response| {
+                            device_result = tx.dispatch(timestamp, Packet::Udp(response));
+                            device_result
+                        }),
+                    &mut Socket::Tcp(ref mut socket) =>
+                        socket.dispatch(timestamp, &limits, |response| {
+                            device_result = tx.dispatch(timestamp, Packet::Tcp(response));
+                            device_result
+                        }),
+                    &mut Socket::__Nonexhaustive => unreachable!()
+                };
+            match (device_result, socket_result) {
+                (Err(Error::Unaddressable), _) => break, // no one to transmit to
+                (Err(Error::Exhausted), _) => break,     // nowhere to transmit
+                (Ok(()), Err(Error::Exhausted)) => (),   // nothing to transmit
+                (Err(err), _) | (_, Err(err)) => {
+                    net_debug!("cannot dispatch egress packet: {}", err);
+                    return Err(err)
+                }
+                (Ok(()), Ok(())) => ()
+            }
+        }
+
+        Ok(())
     }
 }
