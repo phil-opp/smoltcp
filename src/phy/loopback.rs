@@ -28,15 +28,13 @@ impl Loopback {
 }
 
 impl RxDevice for Loopback {
-    type RxBuffer = Vec<u8>;
-
     fn receive<T, F>(&mut self, _timestamp: u64, f: F) -> Result<T>
     where
-        F: FnOnce(Self::RxBuffer) -> Result<T>,
+        F: FnOnce(&[u8]) -> Result<T>,
     {
         let packet = self.0.borrow_mut().pop_front();
         match packet {
-            Some(packet) => f(packet),
+            Some(packet) => f(&packet),
             None => Err(Error::Exhausted)
         }
     }

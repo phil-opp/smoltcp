@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::io;
 use std::os::unix::io::{RawFd, AsRawFd};
-use std::vec::Vec;
 
 use Result;
 use super::{sys, DeviceLimits, RxDevice, TxDevice};
@@ -37,17 +36,15 @@ impl RawSocket {
 }
 
 impl RxDevice for RawSocket {
-    type RxBuffer = Vec<u8>;
-
     fn receive<T, F>(&mut self, _timestamp: u64, f: F) -> Result<T>
     where
-        F: FnOnce(Self::RxBuffer) -> Result<T>,
+        F: FnOnce(&[u8]) -> Result<T>,
     {
         let mut lower = self.lower.borrow_mut();
         let mut buffer = vec![0; self.mtu];
         let size = lower.recv(&mut buffer[..]).unwrap();
         buffer.resize(size, 0);
-        f(buffer)
+        f(&buffer)
     }
 }
 

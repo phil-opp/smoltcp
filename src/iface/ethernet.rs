@@ -89,9 +89,9 @@ impl<'b, 'c> InterfaceInner<'b, 'c> {
         self.protocol_addrs.iter().any(|&probe| probe == addr)
     }
 
-    fn process_ethernet<'frame, T: AsRef<[u8]>>
+    fn process_ethernet<'frame>
                        (&mut self, sockets: &mut SocketSet, timestamp: u64,
-                        frame: &'frame T) ->
+                        frame: &'frame[u8]) ->
                        Result<Packet<'frame>> {
         let eth_frame = EthernetFrame::new_checked(frame)?;
 
@@ -111,8 +111,8 @@ impl<'b, 'c> InterfaceInner<'b, 'c> {
         }
     }
 
-    fn process_arp<'frame, T: AsRef<[u8]>>
-                  (&mut self, eth_frame: &EthernetFrame<&'frame T>) ->
+    fn process_arp<'frame>
+                  (&mut self, eth_frame: &EthernetFrame<&'frame [u8]>) ->
                   Result<Packet<'frame>> {
         let arp_packet = ArpPacket::new_checked(eth_frame.payload())?;
         let arp_repr = ArpRepr::parse(&arp_packet)?;
@@ -151,9 +151,9 @@ impl<'b, 'c> InterfaceInner<'b, 'c> {
         }
     }
 
-    fn process_ipv4<'frame, T: AsRef<[u8]>>
+    fn process_ipv4<'frame>
                    (&mut self, sockets: &mut SocketSet, timestamp: u64,
-                    eth_frame: &EthernetFrame<&'frame T>) ->
+                    eth_frame: &EthernetFrame<&'frame [u8]>) ->
                    Result<Packet<'frame>> {
         let ipv4_packet = Ipv4Packet::new_checked(eth_frame.payload())?;
         let ipv4_repr = Ipv4Repr::parse(&ipv4_packet)?;
@@ -537,8 +537,8 @@ impl<'a, 'b, 'c, RxDeviceT: RxDevice + 'a, TxDeviceT: TxDevice + 'a> Interface<'
 
         let mut processed_any = false;
         loop {
-            let process = |frame| {
-                let response = inner.process_ethernet(sockets, timestamp, &frame);
+            let process = |frame: &_| {
+                let response = inner.process_ethernet(sockets, timestamp, frame);
                 let mut tx = TxInterface { tx_device, inner };
                 match response {
                     Err(err) => {
