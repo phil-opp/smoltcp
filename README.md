@@ -105,13 +105,8 @@ These features are enabled by default.
 
 ### Feature `alloc`
 
-The `alloc` feature enables use of objects owned by the networking stack through a dependency
-on `alloc::boxed::Box`. This only works on nightly rustc.
-
-### Feature `collections`
-
-The `collections` feature enables use of slices owned by the networking stack through a dependency
-on `collections::vec::Vec`. This only works on nightly rustc.
+The `alloc` feature enables use of objects and slices owned by the networking stack through
+dependencies on `alloc::boxed::Box` and `alloc::vec::Vec`. This only works on nightly rustc.
 
 ### Feature `log`
 
@@ -265,12 +260,12 @@ that do. Because of this, only one such example is provided.
 ### examples/loopback.rs
 
 _examples/loopback.rs_ sets up _smoltcp_ to talk with itself via a loopback interface.
-Although it does not require `std`, this example still requires the `collections` feature to run.
+Although it does not require `std`, this example still requires the `alloc` feature to run.
 
 Read its [source code](/examples/loopback.rs), then run it without `std`:
 
 ```sh
-cargo run --example loopback --no-default-features --features collections
+cargo run --example loopback --no-default-features --features alloc
 ```
 
 ... or with `std`:

@@ -25,7 +25,6 @@ getopts = "0.2"
 [features]
 std = ["managed/std"]
 alloc = ["managed/alloc"]
-collections = ["alloc", "managed/collections"]
 verbose = []
 raw_socket = ["libc"]
 tap_interface = ["libc"]
