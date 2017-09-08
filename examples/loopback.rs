@@ -73,7 +73,7 @@ fn main() {
     let mut device = Loopback::new();
 
     #[cfg(feature = "std")]
-    let mut device = {
+    let (mut rx_device, mut tx_device) = {
         let clock = clock.clone();
         utils::setup_logging_with_clock("", move || clock.elapsed());
 
@@ -81,9 +81,10 @@ fn main() {
         utils::add_middleware_options(&mut opts, &mut free);
 
         let mut matches = utils::parse_options(&opts, free);
-        let device = utils::parse_middleware_options(&mut matches, device, /*loopback=*/true);
+        let rx_device = utils::parse_middleware_options(&mut matches, device.clone(), /*loopback=*/true);
+        let tx_device = utils::parse_middleware_options(&mut matches, device, /*loopback=*/true);
 
-        device
+        (rx_device, tx_device)
     };
 
     let mut arp_cache_entries: [_; 8] = Default::default();
@@ -92,7 +93,7 @@ fn main() {
     let     hardware_addr  = EthernetAddress::default();
     let mut protocol_addrs = [IpAddress::v4(127, 0, 0, 1)];
     let mut iface = EthernetInterface::new(
-        &mut device, &mut arp_cache as &mut ArpCache,
+        &mut rx_device, &mut tx_device, &mut arp_cache as &mut ArpCache,
         hardware_addr, &mut protocol_addrs[..]);
 
     let server_socket = {

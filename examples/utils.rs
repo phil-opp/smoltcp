@@ -10,7 +10,7 @@ use log::{LogLevel, LogLevelFilter, LogRecord};
 use env_logger::LogBuilder;
 use getopts::{Options, Matches};
 
-use smoltcp::phy::{Device, EthernetTracer, FaultInjector, TapInterface};
+use smoltcp::phy::{RxDevice, EthernetTracer, FaultInjector, TapInterface};
 use smoltcp::phy::{PcapWriter, PcapSink, PcapMode, PcapLinkType};
 
 pub fn setup_logging_with_clock<F>(filter: &str, since_startup: F)
@@ -92,7 +92,7 @@ pub fn add_middleware_options(opts: &mut Options, _free: &mut Vec<&str>) {
     opts.optopt("", "shaping-interval", "Sets the interval for rate limiting (ms)", "RATE");
 }
 
-pub fn parse_middleware_options<D: Device>(matches: &mut Matches, device: D, loopback: bool)
+pub fn parse_middleware_options<D: RxDevice>(matches: &mut Matches, device: D, loopback: bool)
         -> FaultInjector<EthernetTracer<PcapWriter<D, Rc<PcapSink>>>> {
     let drop_chance      = matches.opt_str("drop-chance").map(|s| u8::from_str(&s).unwrap())
                                   .unwrap_or(0);

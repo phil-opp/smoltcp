@@ -14,7 +14,7 @@ use {Error, Result};
 use super::{RxDevice, TxDevice, DeviceLimits};
 
 /// A loopback device.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Loopback(Rc<RefCell<VecDeque<Vec<u8>>>>);
 
 impl Loopback {
@@ -34,7 +34,8 @@ impl RxDevice for Loopback {
     where
         F: FnOnce(Self::RxBuffer) -> Result<T>,
     {
-        match self.0.borrow_mut().pop_front() {
+        let packet = self.0.borrow_mut().pop_front();
+        match packet {
             Some(packet) => f(packet),
             None => Err(Error::Exhausted)
         }
