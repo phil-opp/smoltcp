@@ -1,5 +1,5 @@
 use {Error, Result};
-use super::{DeviceLimits, Device};
+use super::{DeviceLimits, RxDevice, TxDevice};
 
 // We use our own RNG to stay compatible with #![no_std].
 // The use of the RNG below has a slight bias, but it doesn't matter.
@@ -86,13 +86,13 @@ impl State {
 /// adverse network conditions (such as random packet loss or corruption), or software
 /// or hardware limitations (such as a limited number or size of usable network buffers).
 #[derive(Debug)]
-pub struct FaultInjector<D: Device> {
+pub struct FaultInjector<D> {
     inner:  D,
     state:  State,
     config: Config
 }
 
-impl<D: Device> FaultInjector<D> {
+impl<D> FaultInjector<D> {
     /// Create a fault injector device, using the given random number generator seed.
     pub fn new(inner: D, seed: u32) -> FaultInjector<D> {
         let state = State {
@@ -183,11 +183,36 @@ impl<D: Device> FaultInjector<D> {
     }
 }
 
-impl<D: Device> Device for FaultInjector<D>
-        where D::RxBuffer: AsMut<[u8]> {
+impl<D: RxDevice> RxDevice for FaultInjector<D> where D::RxBuffer: AsMut<[u8]> {
     type RxBuffer = D::RxBuffer;
-    type TxBuffer = TxBuffer<D::TxBuffer>;
 
+    fn receive<T, F>(&mut self, timestamp: u64, f: F) -> Result<T> where F: FnOnce(Self::RxBuffer) -> Result<T> {
+        let &mut Self { ref mut inner, ref config, ref mut state, ..} = self;
+
+        inner.receive(timestamp, |mut buffer| {
+            if state.maybe(config.drop_pct) {
+                net_trace!("rx: randomly dropping a packet");
+                return Err(Error::Exhausted)
+            }
+            if state.maybe(config.corrupt_pct) {
+                net_trace!("rx: randomly corrupting a packet");
+                state.corrupt(&mut buffer)
+            }
+            if config.max_size > 0 && buffer.as_ref().len() > config.max_size {
+                net_trace!("rx: dropping a packet that is too large");
+                return Err(Error::Exhausted)
+            }
+            if !state.maybe_receive(&config, timestamp) {
+                net_trace!("rx: dropping a packet because of rate limiting");
+                return Err(Error::Exhausted)
+            }
+
+            f(buffer)
+        })
+    }
+}
+
+impl<D: TxDevice> TxDevice for FaultInjector<D> {
     fn limits(&self) -> DeviceLimits {
         let mut limits = self.inner.limits();
         if limits.max_transmission_unit > MTU {
@@ -196,88 +221,38 @@ impl<D: Device> Device for FaultInjector<D>
         limits
     }
 
-    fn receive(&mut self, timestamp: u64) -> Result<Self::RxBuffer> {
-        let mut buffer = self.inner.receive(timestamp)?;
-        if self.state.maybe(self.config.drop_pct) {
-            net_trace!("rx: randomly dropping a packet");
-            return Err(Error::Exhausted)
-        }
-        if self.state.maybe(self.config.corrupt_pct) {
-            net_trace!("rx: randomly corrupting a packet");
-            self.state.corrupt(&mut buffer)
-        }
-        if self.config.max_size > 0 && buffer.as_ref().len() > self.config.max_size {
-            net_trace!("rx: dropping a packet that is too large");
-            return Err(Error::Exhausted)
-        }
-        if !self.state.maybe_receive(&self.config, timestamp) {
-            net_trace!("rx: dropping a packet because of rate limiting");
-            return Err(Error::Exhausted)
-        }
-        Ok(buffer)
-    }
+    fn transmit<F>(&mut self, timestamp: u64, length: usize, f: F) -> Result<()>
+        where F: FnOnce(&mut [u8]) -> Result<()>
+    {
+        let &mut Self {ref mut inner, ref mut state, ref mut config, ..} = self;
 
-    fn transmit(&mut self, timestamp: u64, length: usize) -> Result<Self::TxBuffer> {
-        let buffer;
-        if self.state.maybe(self.config.drop_pct) {
-            net_trace!("tx: randomly dropping a packet");
-            buffer = None;
-        } else if self.config.max_size > 0 && length > self.config.max_size {
-            net_trace!("tx: dropping a packet that is too large");
-            buffer = None;
-        } else if !self.state.maybe_transmit(&self.config, timestamp) {
-            net_trace!("tx: dropping a packet because of rate limiting");
-            buffer = None;
-        } else {
-            buffer = Some(self.inner.transmit(timestamp, length)?);
-        }
-        Ok(TxBuffer {
-            buffer: buffer,
-            state:  self.state.clone(),
-            config: self.config,
-            junk:   [0; MTU],
-            length: length
-        })
-    }
-}
-
-#[doc(hidden)]
-pub struct TxBuffer<B: AsRef<[u8]> + AsMut<[u8]>> {
-    state:  State,
-    config: Config,
-    buffer: Option<B>,
-    junk:   [u8; MTU],
-    length: usize
-}
-
-impl<B: AsRef<[u8]> + AsMut<[u8]>> AsRef<[u8]> for TxBuffer<B> {
-    fn as_ref(&self) -> &[u8] {
-        match self.buffer {
-            Some(ref buf) => buf.as_ref(),
-            None => &self.junk[..self.length]
-        }
-    }
-}
-
-impl<B: AsRef<[u8]> + AsMut<[u8]>> AsMut<[u8]> for TxBuffer<B> {
-    fn as_mut(&mut self) -> &mut [u8] {
-        match self.buffer {
-            Some(ref mut buf) => buf.as_mut(),
-            None => &mut self.junk[..self.length]
-        }
-    }
-}
-
-impl<B: AsRef<[u8]> + AsMut<[u8]>> Drop for TxBuffer<B> {
-    fn drop(&mut self) {
-        match self.buffer {
-            Some(ref mut buf) => {
-                if self.state.maybe(self.config.corrupt_pct) {
-                    net_trace!("tx: corrupting a packet");
-                    self.state.corrupt(buf)
+        inner.transmit(timestamp, length, |buffer| {
+            f(buffer)?;
+            let mut drop = false;
+            if state.maybe(config.drop_pct) {
+                net_trace!("tx: randomly dropping a packet");
+                drop = true;
+            } else if config.max_size > 0 && length > config.max_size {
+                net_trace!("tx: dropping a packet that is too large");
+                drop = true;
+            } else if !state.maybe_transmit(&config, timestamp) {
+                net_trace!("tx: dropping a packet because of rate limiting");
+                drop = true;
+            }
+            if drop {
+                for byte in buffer.iter_mut() {
+                    *byte = 0;
                 }
-            },
-            None => ()
-        }
+                // FIXME: ensure that zero packets doesn't get sent out
+                // ALTERNATIVE: return some error (e.g. Dropped) instead of
+                //              silently failing
+            }
+
+            if state.maybe(config.corrupt_pct) {
+                net_trace!("tx: corrupting a packet");
+                state.corrupt(buffer);
+            }
+            Ok(())
+        })
     }
 }
