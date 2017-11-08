@@ -84,6 +84,7 @@ mod ipv4;
 mod icmpv4;
 mod udp;
 mod tcp;
+mod dhcp;
 
 pub use self::pretty_print::PrettyPrinter;
 
@@ -124,3 +125,6 @@ pub use self::tcp::Packet as TcpPacket;
 pub use self::tcp::TcpOption;
 pub use self::tcp::Repr as TcpRepr;
 pub use self::tcp::Control as TcpControl;
+
+pub use self::dhcp::Packet as DhcpPacket;
+pub use self::dhcp::Repr as DhcpRepr;
