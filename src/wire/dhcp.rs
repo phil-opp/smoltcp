@@ -13,6 +13,7 @@ pub struct Packet<T: AsRef<[u8]>> {
 
 mod field {
     #![allow(non_snake_case)]
+    #![allow(unused)]
 
     use wire::field::*;
 
