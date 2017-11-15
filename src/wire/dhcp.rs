@@ -438,6 +438,7 @@ pub struct Repr {
     pub your_ip: Ipv4Address,
     pub server_ip: Ipv4Address,
     pub relay_agent_ip: Ipv4Address,
+    pub broadcast: bool,
 }
 
 impl Repr {
@@ -482,13 +483,15 @@ impl Repr {
         }
 
         // check magic number
-        if packet.magin_number() != 0x63825363 {
+        if packet.magic_number() != 0x63825363 {
             return Err(Error::Malformed);
         }
 
+        let broadcast = packet.broadcast_flag()?;
+
         Ok(Repr {
             transaction_id, client_hardware_address, client_ip, your_ip, server_ip, relay_agent_ip,
-            message_type: message_type.ok_or(Error::Malformed)?,
+            broadcast, message_type: message_type.ok_or(Error::Malformed)?,
         })
     }
 
