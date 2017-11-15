@@ -396,7 +396,7 @@ impl<'a> DhcpOption<'a> {
     pub fn buffer_len(&self) -> usize {
         match self {
             &DhcpOption::EndOfList => 1,
-            &DhcpOption::MessageType(_) => 1,
+            &DhcpOption::MessageType(_) => 3,
             &DhcpOption::Unknown { data, .. } => 2 + data.len()
         }
     }
