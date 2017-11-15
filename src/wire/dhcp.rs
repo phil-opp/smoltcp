@@ -356,7 +356,9 @@ enum_with_unknown! {
 pub enum DhcpOption<'a> {
     EndOfList,
     MessageType(MessageType),
-    Unknown { kind: u8, data: &'a [u8] }
+    RequestedIp(Ipv4Address),
+    ServerIdentifier(Ipv4Address),
+    Other { kind: u8, data: &'a [u8] }
 }
 
 impl<'a> DhcpOption<'a> {
@@ -383,10 +385,17 @@ impl<'a> DhcpOption<'a> {
                     (field::OPT_PAD, _) =>
                         unreachable!(),
                     (field::OPT_DHCP_MESSAGE_TYPE, 1) => {
-                        option = DhcpOption::MessageType(MessageType::from(data[0]))
+                        option = DhcpOption::MessageType(MessageType::from(data[0]));
                     },
-                    (_, _) =>
-                        option = DhcpOption::Unknown { kind: kind, data: data }
+                    (field::OPT_REQUESTED_IP, 4) => {
+                        option = DhcpOption::RequestedIp(Ipv4Address::from_bytes(data));
+                    }
+                    (field::OPT_SERVER_IDENTIFIER, 4) => {
+                        option = DhcpOption::ServerIdentifier(Ipv4Address::from_bytes(data));
+                    }
+                    (_, _) => {
+                        option = DhcpOption::Other { kind: kind, data: data };
+                    }
                 }
             }
         }
@@ -397,7 +406,10 @@ impl<'a> DhcpOption<'a> {
         match self {
             &DhcpOption::EndOfList => 1,
             &DhcpOption::MessageType(_) => 3,
-            &DhcpOption::Unknown { data, .. } => 2 + data.len()
+            &DhcpOption::RequestedIp(ip) | &DhcpOption::ServerIdentifier(ip) => {
+                2 + ip.as_bytes().len()
+            },
+            &DhcpOption::Other { data, .. } => 2 + data.len()
         }
     }
 
@@ -417,9 +429,12 @@ impl<'a> DhcpOption<'a> {
                         buffer[0] = field::OPT_DHCP_MESSAGE_TYPE;
                         buffer[2] = value.into();
                     }
-                    &DhcpOption::Unknown { kind, data: provided } => {
+                    &DhcpOption::RequestedIp(ip) | &DhcpOption::ServerIdentifier(ip) => {
+                        buffer[2..].copy_from_slice(ip.as_bytes());
+                    }
+                    &DhcpOption::Other { kind, data: provided } => {
                         buffer[0] = kind;
-                        buffer[2..].copy_from_slice(provided)
+                        buffer[2..].copy_from_slice(provided);
                     }
                 }
             }
@@ -430,7 +445,7 @@ impl<'a> DhcpOption<'a> {
 
 /// A high-level representation of a Dynamic Host Configuration Protocol packet.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct Repr {
+pub struct Repr<'a> {
     pub message_type: MessageType,
     pub transaction_id: u32,
     pub client_hardware_address: EthernetAddress,
@@ -439,11 +454,14 @@ pub struct Repr {
     pub server_ip: Ipv4Address,
     pub relay_agent_ip: Ipv4Address,
     pub broadcast: bool,
+    pub requested_ip: Option<Ipv4Address>,
+    pub server_identifier: Option<Ipv4Address>,
+    pub parameter_request_list: Option<&'a [u8]>,
 }
 
-impl Repr {
+impl<'a> Repr<'a> {
     /// Parse a DHCP packet and return a high-level representation.
-    pub fn parse<T>(packet: &Packet<&T>) -> Result<Repr>
+    pub fn parse<T>(packet: &Packet<&'a T>) -> Result<Self>
             where T: AsRef<[u8]> + ?Sized {
 
         packet.check_len()?;
@@ -455,6 +473,9 @@ impl Repr {
         let relay_agent_ip = packet.relay_agent_ip();
 
         let mut message_type = None;
+        let mut requested_ip = None;
+        let mut server_identifier = None;
+        let mut parameter_request_list = None;
 
         let mut options = packet.options()?;
         while options.len() > 0 {
@@ -467,7 +488,16 @@ impl Repr {
                     }
                     message_type = Some(value);
                 },
-                _ => ()
+                DhcpOption::RequestedIp(ip) => {
+                    requested_ip = Some(ip);
+                }
+                DhcpOption::ServerIdentifier(ip) => {
+                    server_identifier = Some(ip);
+                }
+                DhcpOption::Other {kind: field::OPT_PARAMETER_REQUEST_LIST, data} => {
+                    parameter_request_list = Some(data);
+                }
+                DhcpOption::Other {..} => {}
             }
             options = next_options;
         }
@@ -491,7 +521,8 @@ impl Repr {
 
         Ok(Repr {
             transaction_id, client_hardware_address, client_ip, your_ip, server_ip, relay_agent_ip,
-            broadcast, message_type: message_type.ok_or(Error::Malformed)?,
+            broadcast, requested_ip, server_identifier, parameter_request_list,
+            message_type: message_type.ok_or(Error::Malformed)?,
         })
     }
 
@@ -515,6 +546,13 @@ impl Repr {
         {
             let mut options = packet.options_mut()?;
             let tmp = options; options = DhcpOption::MessageType(self.message_type).emit(tmp);
+            if let Some(list) = self.parameter_request_list {
+                let option = DhcpOption::Other{ kind: field::OPT_PARAMETER_REQUEST_LIST, data: list };
+                let tmp = options; options = option.emit(tmp);
+            }
+            if let Some(ip) = self.requested_ip {
+                let tmp = options; options = DhcpOption::RequestedIp(ip).emit(tmp);
+            }
             DhcpOption::EndOfList.emit(options);
         }
 
