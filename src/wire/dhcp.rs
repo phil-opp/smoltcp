@@ -191,7 +191,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
         NetworkEndian::read_u16(field)
     }
 
-    pub fn magin_number(&self) -> u32 {
+    pub fn magic_number(&self) -> u32 {
         let field = &self.buffer.as_ref()[field::MAGIC_NUMBER];
         NetworkEndian::read_u32(field)
     }
@@ -270,7 +270,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         NetworkEndian::write_u16(field, value);
     }
 
-    pub fn set_magin_number(&mut self, value: u32) {
+    pub fn set_magic_number(&mut self, value: u32) {
         let field = &mut self.buffer.as_mut()[field::MAGIC_NUMBER];
         NetworkEndian::write_u32(field, value);
     }
