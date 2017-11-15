@@ -499,6 +499,24 @@ impl Repr {
     pub fn emit<T>(&self, packet: &mut Packet<&mut T>) -> Result<()>
             where T: AsRef<[u8]> + AsMut<[u8]> + ?Sized {
         packet.set_opcode(self.message_type.opcode()?);
+        packet.set_hardware_address_type(HardwareAddressType::Ethernet);
+        packet.set_hardware_address_len(6);
+        packet.set_transaction_id(self.transaction_id);
+        packet.set_client_hardware_address(self.client_hardware_address);
+        packet.set_hops(0);
+        packet.set_secs(0); // TODO
+        packet.set_magic_number(0x63825363);
+        packet.set_client_ip(self.client_ip);
+        packet.set_your_ip(self.your_ip);
+        packet.set_server_ip(self.server_ip);
+        packet.set_relay_agent_ip(self.relay_agent_ip);
+        packet.set_broadcast_flag(self.broadcast);
+
+        {
+            let mut options = packet.options_mut()?;
+            let tmp = options; options = DhcpOption::MessageType(self.message_type).emit(tmp);
+            DhcpOption::EndOfList.emit(options);
+        }
 
         Ok(())
     }
