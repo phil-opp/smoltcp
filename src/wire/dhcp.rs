@@ -241,6 +241,64 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let data = self.buffer.as_mut();
         data[field::OP] = value;
     }
+
+    pub fn set_hardware_address_type(&mut self, value: HardwareAddressType) {
+        let data = self.buffer.as_mut();
+        data[field::HTYPE] = value.into();
+    }
+
+    pub fn set_hardware_address_len(&mut self, value: u8) {
+        self.buffer.as_mut()[field::HLEN] = value;
+    }
+
+    pub fn set_transaction_id(&mut self, value: u32) {
+        let field = &mut self.buffer.as_mut()[field::XID];
+        NetworkEndian::write_u32(field, value)
+    }
+
+    pub fn set_client_hardware_address(&mut self, value: EthernetAddress) {
+        let field = &mut self.buffer.as_mut()[field::CHADDR];
+        field.copy_from_slice(value.as_bytes());
+    }
+
+    pub fn set_hops(&mut self, value: u8) {
+        self.buffer.as_mut()[field::HOPS] = value;
+    }
+
+    pub fn set_secs(&mut self, value: u16) {
+        let field = &mut self.buffer.as_mut()[field::SECS];
+        NetworkEndian::write_u16(field, value);
+    }
+
+    pub fn set_magin_number(&mut self, value: u32) {
+        let field = &mut self.buffer.as_mut()[field::MAGIC_NUMBER];
+        NetworkEndian::write_u32(field, value);
+    }
+
+    pub fn set_client_ip(&mut self, value: Ipv4Address) {
+        let field = &mut self.buffer.as_mut()[field::CIADDR];
+        field.copy_from_slice(value.as_bytes());
+    }
+
+    pub fn set_your_ip(&mut self, value: Ipv4Address) {
+        let field = &mut self.buffer.as_mut()[field::YIADDR];
+        field.copy_from_slice(value.as_bytes());
+    }
+
+    pub fn set_server_ip(&mut self, value: Ipv4Address) {
+        let field = &mut self.buffer.as_mut()[field::SIADDR];
+        field.copy_from_slice(value.as_bytes());
+    }
+
+    pub fn set_relay_agent_ip(&mut self, value: Ipv4Address) {
+        let field = &mut self.buffer.as_mut()[field::GIADDR];
+        field.copy_from_slice(value.as_bytes());
+    }
+
+    pub fn set_broadcast_flag(&mut self, value: bool) {
+        let field = &mut self.buffer.as_mut()[field::FLAGS];
+        NetworkEndian::write_u16(field, if value { 1 } else { 0 });
+    }
 }
 
 enum_with_unknown! {
