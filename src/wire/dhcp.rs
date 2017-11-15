@@ -163,20 +163,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
         data[field::OP]
     }
 
-    pub fn hardware_address_type(&self) -> Result<HardwareAddressType> {
+    pub fn hardware_address_type(&self) -> HardwareAddressType {
         let data = self.buffer.as_ref();
-        match data[field::HTYPE] {
-            1 => Ok(HardwareAddressType::Ethernet),
-            2 => Ok(HardwareAddressType::ExperimentalEthernet),
-            3 => Ok(HardwareAddressType::AmateurRadio),
-            4 => Ok(HardwareAddressType::ProNet),
-            5 => Ok(HardwareAddressType::Chaos),
-            6 => Ok(HardwareAddressType::Ieee802),
-            7 => Ok(HardwareAddressType::Arcnet),
-            8 => Ok(HardwareAddressType::Hyperchannel),
-            9 => Ok(HardwareAddressType::Lanstar),
-            _ => Err(Error::Malformed)
-        }
+        HardwareAddressType::from(data[field::HTYPE])
     }
 
     pub fn hardware_address_len(&self) -> u8 {
@@ -254,41 +243,44 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
-/// The possible opcodes/message types of a DHCP packet.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum MessageType {
-    Discover,
-    Offer,
-    Request,
-    Decline,
-    Ack,
-    Nak,
-    Release,
-    Inform,
+enum_with_unknown! {
+    /// The possible opcodes/message types of a DHCP packet.
+    pub enum MessageType(u8) {
+        Discover = 1,
+        Offer = 2,
+        Request = 3,
+        Decline = 4,
+        Ack = 5,
+        Nak = 6,
+        Release = 7,
+        Inform = 8,
+    }
 }
 
 impl MessageType {
-    fn opcode(&self) -> u8 {
+    fn opcode(&self) -> Result<u8> {
         match *self {
             MessageType::Discover | MessageType::Inform | MessageType::Request |
-                MessageType::Decline | MessageType::Release => 1,
-            MessageType::Offer | MessageType::Ack | MessageType::Nak => 2,
+                MessageType::Decline | MessageType::Release => Ok(1),
+            MessageType::Offer | MessageType::Ack | MessageType::Nak => Ok(2),
+            MessageType::Unknown(_) => Err(Error::Malformed),
         }
     }
 }
 
-/// The possible hardware address types of a DHCP packet.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum HardwareAddressType {
-    Ethernet,
-    ExperimentalEthernet,
-    AmateurRadio,
-    ProNet,
-    Chaos,
-    Ieee802,
-    Arcnet,
-    Hyperchannel,
-    Lanstar,
+enum_with_unknown! {
+    /// The possible hardware address types of a DHCP packet.
+    pub enum HardwareAddressType(u8) {
+        Ethernet = 1,
+        ExperimentalEthernet = 2,
+        AmateurRadio = 3,
+        ProNet = 4,
+        Chaos = 5,
+        Ieee802 = 6,
+        Arcnet = 7,
+        Hyperchannel = 8,
+        Lanstar = 9,
+    }
 }
 
 /// A representation of a single DHCP option.
@@ -323,17 +315,7 @@ impl<'a> DhcpOption<'a> {
                     (field::OPT_PAD, _) =>
                         unreachable!(),
                     (field::OPT_DHCP_MESSAGE_TYPE, 1) => {
-                        option = DhcpOption::MessageType(match data[0] {
-                            1 => MessageType::Discover,
-                            2 => MessageType::Offer,
-                            3 => MessageType::Request,
-                            4 => MessageType::Decline,
-                            5 => MessageType::Ack,
-                            6 => MessageType::Nak,
-                            7 => MessageType::Release,
-                            8 => MessageType::Inform,
-                            _ => return Err(Error::Malformed),
-                        })
+                        option = DhcpOption::MessageType(MessageType::from(data[0]))
                     },
                     (_, _) =>
                         option = DhcpOption::Unknown { kind: kind, data: data }
@@ -377,7 +359,7 @@ impl Repr {
             match option {
                 DhcpOption::EndOfList => break,
                 DhcpOption::MessageType(value) => {
-                    if value.opcode() != packet.opcode() {
+                    if value.opcode()? != packet.opcode() {
                         return Err(Error::Malformed);
                     }
                     message_type = Some(value);
@@ -388,7 +370,7 @@ impl Repr {
         }
 
         // only ethernet is supported right now
-        match packet.hardware_address_type()? {
+        match packet.hardware_address_type() {
             HardwareAddressType::Ethernet => {
                 if packet.hardware_address_len() != 6 {
                     return Err(Error::Malformed);
@@ -409,8 +391,10 @@ impl Repr {
     }
 
     /// Emit a high-level representation into a Transmission Control Protocol packet.
-    pub fn emit<T>(&self, packet: &mut Packet<&mut T>)
+    pub fn emit<T>(&self, packet: &mut Packet<&mut T>) -> Result<()>
             where T: AsRef<[u8]> + AsMut<[u8]> + ?Sized {
-        packet.set_opcode(self.message_type.opcode());
+        packet.set_opcode(self.message_type.opcode()?);
+
+        Ok(())
     }
 }
