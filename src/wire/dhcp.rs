@@ -301,6 +301,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
+    /// Return a pointer to the options.
+    #[inline]
+    pub fn options_mut(&mut self) -> Result<&mut [u8]> {
+        let data = self.buffer.as_mut();
+        data.get_mut(field::OPTIONS).ok_or(Error::Truncated)
+    }
+}
+
+
 enum_with_unknown! {
     /// The possible opcodes/message types of a DHCP packet.
     pub enum MessageType(u8) {
@@ -381,6 +391,40 @@ impl<'a> DhcpOption<'a> {
             }
         }
         Ok((&buffer[length..], option))
+    }
+
+    pub fn buffer_len(&self) -> usize {
+        match self {
+            &DhcpOption::EndOfList => 1,
+            &DhcpOption::MessageType(_) => 1,
+            &DhcpOption::Unknown { data, .. } => 2 + data.len()
+        }
+    }
+
+    pub fn emit<'b>(&self, buffer: &'b mut [u8]) -> &'b mut [u8] {
+        let length;
+        match self {
+            &DhcpOption::EndOfList => {
+                length    = 1;
+                buffer[0] = field::OPT_END;
+            }
+            _ => {
+                length = self.buffer_len();
+                buffer[1] = length as u8;
+                match self {
+                    &DhcpOption::EndOfList => unreachable!(),
+                    &DhcpOption::MessageType(value) => {
+                        buffer[0] = field::OPT_DHCP_MESSAGE_TYPE;
+                        buffer[2] = value.into();
+                    }
+                    &DhcpOption::Unknown { kind, data: provided } => {
+                        buffer[0] = kind;
+                        buffer[2..].copy_from_slice(provided)
+                    }
+                }
+            }
+        }
+        &mut buffer[length..]
     }
 }
 
