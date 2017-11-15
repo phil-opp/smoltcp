@@ -36,7 +36,7 @@ macro_rules! enum_with_unknown {
     (
         $( #[$enum_attr:meta] )*
         pub enum $name:ident($ty:ty) {
-            $( $variant:ident = $value:expr ),+
+            $( $variant:ident = $value:expr ),+ $(,)*
         }
     ) => {
         enum_with_unknown! {
@@ -51,7 +51,7 @@ macro_rules! enum_with_unknown {
         pub doc enum $name:ident($ty:ty) {
             $(
               $( #[$variant_attr:meta] )+
-              $variant:ident = $value:expr
+              $variant:ident = $value:expr $(,)*
             ),+
         }
     ) => {
