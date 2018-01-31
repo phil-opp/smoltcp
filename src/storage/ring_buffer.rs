@@ -72,6 +72,11 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         self.capacity() - self.len()
     }
 
+    /// Return the number of contiguos elements that can be added to the ring buffer.
+    pub fn contiguous_window(&self) -> usize {
+        cmp::min(self.window(), self.capacity() - self.write_at())
+    }
+
     /// Query whether the buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -80,6 +85,10 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Query whether the buffer is full.
     pub fn is_full(&self) -> bool {
         self.window() == 0
+    }
+
+    fn write_at(&self) -> usize {
+        (self.read_at + self.length) % self.capacity()
     }
 }
 
@@ -147,8 +156,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// than the size of the slice passed into it.
     pub fn enqueue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
             where F: FnOnce(&'b mut [T]) -> (usize, R) {
-        let write_at = (self.read_at + self.length) % self.capacity();
-        let max_size = cmp::min(self.window(), self.capacity() - write_at);
+        let write_at = self.write_at();
+        let max_size = self.contiguous_window();
         let (size, result) = f(&mut self.storage[write_at..write_at + max_size]);
         assert!(size <= max_size);
         self.length += size;

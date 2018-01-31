@@ -1,76 +1,68 @@
 use core::cmp::min;
-use managed::Managed;
+use managed::ManagedSlice;
 
 use {Error, Result};
 use wire::{IpProtocol, IpRepr, IpEndpoint, UdpRepr};
 use socket::{Socket, SocketMeta, SocketHandle};
-use storage::{Resettable, RingBuffer};
+use storage::RingBuffer;
 
-/// A buffered UDP packet.
-#[derive(Debug)]
-pub struct PacketBuffer<'a> {
+// Endpoint and size of an UDP packet.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PacketMetadata {
     endpoint: IpEndpoint,
-    size:     usize,
-    payload:  Managed<'a, [u8]>
-}
-
-impl<'a> PacketBuffer<'a> {
-    /// Create a buffered packet.
-    pub fn new<T>(payload: T) -> PacketBuffer<'a>
-            where T: Into<Managed<'a, [u8]>> {
-        PacketBuffer {
-            endpoint: IpEndpoint::default(),
-            size:     0,
-            payload:  payload.into()
-        }
-    }
-
-    fn as_ref<'b>(&'b self) -> &'b [u8] {
-        &self.payload[..self.size]
-    }
-
-    fn as_mut<'b>(&'b mut self) -> &'b mut [u8] {
-        &mut self.payload[..self.size]
-    }
-
-    fn resize<'b>(&'b mut self, size: usize) -> Result<&'b mut Self> {
-        if self.payload.len() >= size {
-            self.size = size;
-            Ok(self)
-        } else {
-            Err(Error::Truncated)
-        }
-    }
-}
-
-impl<'a> Resettable for PacketBuffer<'a> {
-    fn reset(&mut self) {
-        self.endpoint = Default::default();
-        self.size = 0;
-    }
+    payload_size: usize,
+    /// Dummy packets can be used to avoid wrap-arounds of packets in the payload buffer
+    dummy: bool,
 }
 
 /// An UDP packet ring buffer.
-pub type SocketBuffer<'a, 'b: 'a> = RingBuffer<'a, PacketBuffer<'b>>;
+#[derive(Debug)]
+pub struct SocketBuffer<'a> {
+    metadata_buffer: RingBuffer<'a, PacketMetadata>,
+    payload_buffer: RingBuffer<'a, u8>,
+}
+
+impl<'a> SocketBuffer<'a> {
+    /// Create a new socket buffer with the provided metadata and payload storage.
+    ///
+    /// Metadata storage limits the maximum _number_ of UDP packets in the buffer and payload
+    /// storage limits the maximum _cumulated size_ of UDP packets.
+    pub fn new<MS, PS>(metadata_storage: MS, payload_storage: PS) -> SocketBuffer<'a>
+        where MS: Into<ManagedSlice<'a, PacketMetadata>>, PS: Into<ManagedSlice<'a, u8>>,
+    {
+        SocketBuffer {
+            metadata_buffer: RingBuffer::new(metadata_storage),
+            payload_buffer: RingBuffer::new(payload_storage),
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.metadata_buffer.is_full() || self.payload_buffer.is_full()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.metadata_buffer.is_empty() || self.payload_buffer.is_empty()
+    }
+}
 
 /// An User Datagram Protocol socket.
 ///
 /// An UDP socket is bound to a specific endpoint, and owns transmit and receive
 /// packet buffers.
 #[derive(Debug)]
-pub struct UdpSocket<'a, 'b: 'a> {
+pub struct UdpSocket<'a> {
     pub(crate) meta: SocketMeta,
     endpoint:  IpEndpoint,
-    rx_buffer: SocketBuffer<'a, 'b>,
-    tx_buffer: SocketBuffer<'a, 'b>,
+    rx_buffer: SocketBuffer<'a>,
+    tx_buffer: SocketBuffer<'a>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
     hop_limit: Option<u8>
 }
 
-impl<'a, 'b> UdpSocket<'a, 'b> {
+impl<'a> UdpSocket<'a> {
     /// Create an UDP socket with the given buffers.
-    pub fn new(rx_buffer: SocketBuffer<'a, 'b>,
-               tx_buffer: SocketBuffer<'a, 'b>) -> UdpSocket<'a, 'b> {
+    pub fn new(rx_buffer: SocketBuffer<'a>,
+               tx_buffer: SocketBuffer<'a>) -> UdpSocket<'a> {
         UdpSocket {
             meta:      SocketMeta::default(),
             endpoint:  IpEndpoint::default(),
@@ -156,18 +148,44 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
     /// to its payload.
     ///
     /// This function returns `Err(Error::Exhausted)` if the transmit buffer is full,
-    /// `Err(Error::Truncated)` if the requested size is larger than the packet buffer
+    /// `Err(Error::Truncated)` if the requested size is larger than the payload buffer
     /// size, and `Err(Error::Unaddressable)` if local or remote port, or remote address,
     /// are unspecified.
     pub fn send(&mut self, size: usize, endpoint: IpEndpoint) -> Result<&mut [u8]> {
         if self.endpoint.port == 0 { return Err(Error::Unaddressable) }
         if !endpoint.is_specified() { return Err(Error::Unaddressable) }
 
-        let packet_buf = self.tx_buffer.enqueue_one_with(|buf| buf.resize(size))?;
-        packet_buf.endpoint = endpoint;
+        if self.tx_buffer.payload_buffer.capacity() < size {
+            return Err(Error::Truncated);
+        }
+
+        if self.tx_buffer.metadata_buffer.is_full() || self.tx_buffer.payload_buffer.window() < size {
+            return Err(Error::Exhausted);
+        }
+
+        if self.tx_buffer.payload_buffer.contiguous_window() < size {
+            // we reached the end of buffer, so the data does not fit without wrap-around
+            // -> insert dummy and try again
+            self.tx_buffer.payload_buffer.enqueue_many(size);
+            let metadata_buf = self.tx_buffer.metadata_buffer.enqueue_one()?;
+            metadata_buf.dummy = true;
+        }
+
+        if self.tx_buffer.metadata_buffer.is_full() || self.tx_buffer.payload_buffer.window() < size {
+            return Err(Error::Exhausted);
+        }
+
+        let payload_buf = self.tx_buffer.payload_buffer.enqueue_many(size);
+        assert_eq!(payload_buf.len(), size);
+
+        let metadata_buf = self.tx_buffer.metadata_buffer.enqueue_one()?;
+        metadata_buf.endpoint = endpoint;
+        metadata_buf.payload_size = size;
+        metadata_buf.dummy = false;
+
         net_trace!("{}:{}:{}: buffer to send {} octets",
-                   self.meta.handle, self.endpoint, packet_buf.endpoint, size);
-        Ok(&mut packet_buf.as_mut()[..size])
+                   self.meta.handle, self.endpoint, metadata_buf.endpoint, size);
+        Ok(payload_buf)
     }
 
     /// Enqueue a packet to be sent to a given remote endpoint, and fill it from a slice.
@@ -183,11 +201,21 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
     ///
     /// This function returns `Err(Error::Exhausted)` if the receive buffer is empty.
     pub fn recv(&mut self) -> Result<(&[u8], IpEndpoint)> {
-        let packet_buf = self.rx_buffer.dequeue_one()?;
+        let mut metadata_buf = *self.rx_buffer.metadata_buffer.dequeue_one()?;
+        if metadata_buf.dummy {
+            // packet is dummy packet -> drop it and try again
+            self.rx_buffer.payload_buffer.dequeue_many(metadata_buf.payload_size);
+            metadata_buf = *self.rx_buffer.metadata_buffer.dequeue_one()?;
+        }
+
+        assert!(!metadata_buf.dummy);
+        let payload_buf = self.rx_buffer.payload_buffer.dequeue_many(metadata_buf.payload_size);
+        assert_eq!(metadata_buf.payload_size, payload_buf.len()); // ensured by inserting logic
+
         net_trace!("{}:{}:{}: receive {} buffered octets",
                    self.meta.handle, self.endpoint,
-                   packet_buf.endpoint, packet_buf.size);
-        Ok((&packet_buf.as_ref(), packet_buf.endpoint))
+                metadata_buf.endpoint, metadata_buf.payload_size);
+        Ok((payload_buf, metadata_buf.endpoint))
     }
 
     /// Dequeue a packet received from a remote endpoint, copy the payload into the given slice,
@@ -212,12 +240,40 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
     pub(crate) fn process(&mut self, ip_repr: &IpRepr, repr: &UdpRepr) -> Result<()> {
         debug_assert!(self.accepts(ip_repr, repr));
 
-        let packet_buf = self.rx_buffer.enqueue_one_with(|buf| buf.resize(repr.payload.len()))?;
-        packet_buf.as_mut().copy_from_slice(repr.payload);
-        packet_buf.endpoint = IpEndpoint { addr: ip_repr.src_addr(), port: repr.src_port };
+        let size = repr.payload.len();
+
+        if self.rx_buffer.payload_buffer.capacity() < size {
+            return Err(Error::Truncated);
+        }
+
+        if self.rx_buffer.metadata_buffer.is_full() || self.rx_buffer.payload_buffer.window() < size {
+            return Err(Error::Exhausted);
+        }
+
+        if self.rx_buffer.payload_buffer.contiguous_window() < size {
+            // we reached the end of buffer, so the data does not fit without wrap-around
+            // -> insert dummy and try again
+            self.rx_buffer.payload_buffer.enqueue_many(size);
+            let metadata_buf = self.rx_buffer.metadata_buffer.enqueue_one()?;
+            metadata_buf.dummy = true;
+        }
+
+        if self.rx_buffer.metadata_buffer.is_full() || self.rx_buffer.payload_buffer.window() < size {
+            return Err(Error::Exhausted);
+        }
+
+        let payload_buf = self.rx_buffer.payload_buffer.enqueue_many(size);
+        assert_eq!(payload_buf.len(), size);
+
+        let metadata_buf = self.rx_buffer.metadata_buffer.enqueue_one()?;
+        metadata_buf.endpoint = IpEndpoint { addr: ip_repr.src_addr(), port: repr.src_port };
+        metadata_buf.payload_size = size;
+        metadata_buf.dummy = false;
+        payload_buf.copy_from_slice(repr.payload);
+
         net_trace!("{}:{}:{}: receiving {} octets",
                    self.meta.handle, self.endpoint,
-                   packet_buf.endpoint, packet_buf.size);
+                   metadata_buf.endpoint, metadata_buf.payload_size);
         Ok(())
     }
 
@@ -226,24 +282,47 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
         let handle   = self.handle();
         let endpoint = self.endpoint;
         let hop_limit = self.hop_limit.unwrap_or(64);
-        self.tx_buffer.dequeue_one_with(|packet_buf| {
-            net_trace!("{}:{}:{}: sending {} octets",
-                       handle, endpoint,
-                       packet_buf.endpoint, packet_buf.size);
 
-            let repr = UdpRepr {
-                src_port: endpoint.port,
-                dst_port: packet_buf.endpoint.port,
-                payload:  &packet_buf.as_ref()[..]
-            };
-            let ip_repr = IpRepr::Unspecified {
-                src_addr:    endpoint.addr,
-                dst_addr:    packet_buf.endpoint.addr,
-                protocol:    IpProtocol::Udp,
-                payload_len: repr.buffer_len(),
-                hop_limit:   hop_limit,
-            };
-            emit((ip_repr, repr))
+        let SocketBuffer { ref mut metadata_buffer, ref mut payload_buffer } = self.tx_buffer;
+
+        // dequeue potential dummy
+        let result = metadata_buffer.dequeue_one_with(|metadata_buf| {
+            if metadata_buf.dummy {
+                Ok(metadata_buf.payload_size) // dequeue metadata
+            } else {
+                Err(Error::Exhausted) // don't dequeue metadata
+            }
+        });
+        if let Ok(size) = result {
+            payload_buffer.dequeue_many(size); // dequeue dummy payload
+        }
+
+        metadata_buffer.dequeue_one_with(move |metadata_buf| {
+            assert!(!metadata_buf.dummy);
+            payload_buffer.dequeue_many_with(|payload_buf| {
+                let payload_buf = &payload_buf[..metadata_buf.payload_size];
+
+                net_trace!("{}:{}:{}: sending {} octets",
+                            handle, endpoint,
+                            metadata_buf.endpoint, metadata_buf.payload_size);
+
+                let repr = UdpRepr {
+                    src_port: endpoint.port,
+                    dst_port: metadata_buf.endpoint.port,
+                    payload:  payload_buf,
+                };
+                let ip_repr = IpRepr::Unspecified {
+                    src_addr:    endpoint.addr,
+                    dst_addr:    metadata_buf.endpoint.addr,
+                    protocol:    IpProtocol::Udp,
+                    payload_len: repr.buffer_len(),
+                    hop_limit:   hop_limit,
+                };
+                match emit((ip_repr, repr)) {
+                    Ok(ret) => (metadata_buf.payload_size, Ok(ret)),
+                    Err(ret) => (0, Err(ret)),
+                }
+            }).1
         })
     }
 
@@ -256,7 +335,7 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Into<Socket<'a, 'b>> for UdpSocket<'a, 'b> {
+impl<'a, 'b> Into<Socket<'a, 'b>> for UdpSocket<'a> {
     fn into(self) -> Socket<'a, 'b> {
         Socket::Udp(self)
     }
@@ -272,17 +351,13 @@ mod test {
     use wire::ip::test::{MOCK_IP_ADDR_1, MOCK_IP_ADDR_2, MOCK_IP_ADDR_3};
     use super::*;
 
-    fn buffer(packets: usize) -> SocketBuffer<'static, 'static> {
-        let mut storage = vec![];
-        for _ in 0..packets {
-            storage.push(PacketBuffer::new(vec![0; 16]))
-        }
-        SocketBuffer::new(storage)
+    fn buffer(packets: usize) -> SocketBuffer<'static> {
+        SocketBuffer::new(vec![Default::default(); packets], vec![0; 16 * packets])
     }
 
-    fn socket(rx_buffer: SocketBuffer<'static, 'static>,
-              tx_buffer: SocketBuffer<'static, 'static>)
-            -> UdpSocket<'static, 'static> {
+    fn socket(rx_buffer: SocketBuffer<'static>,
+              tx_buffer: SocketBuffer<'static>)
+            -> UdpSocket<'static> {
         UdpSocket::new(rx_buffer, tx_buffer)
     }
 
