@@ -71,7 +71,7 @@ pub enum Socket<'a, 'b: 'a> {
     #[cfg(all(feature = "socket-icmp", feature = "proto-ipv4"))]
     Icmp(IcmpSocket<'a, 'b>),
     #[cfg(feature = "socket-udp")]
-    Udp(UdpSocket<'a>),
+    Udp(UdpSocket<'a, 'b>),
     #[cfg(feature = "socket-tcp")]
     Tcp(TcpSocket<'a>),
     #[doc(hidden)]
@@ -151,6 +151,6 @@ from_socket!(RawSocket<'a, 'b>, Raw);
 #[cfg(all(feature = "socket-icmp", feature = "proto-ipv4"))]
 from_socket!(IcmpSocket<'a, 'b>, Icmp);
 #[cfg(feature = "socket-udp")]
-from_socket!(UdpSocket<'a>, Udp);
+from_socket!(UdpSocket<'a, 'b>, Udp);
 #[cfg(feature = "socket-tcp")]
 from_socket!(TcpSocket<'a>, Tcp);

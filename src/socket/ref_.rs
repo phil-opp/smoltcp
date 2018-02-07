@@ -24,7 +24,7 @@ impl<'a, 'b> Session for RawSocket<'a, 'b> {}
 #[cfg(all(feature = "socket-icmp", feature = "proto-ipv4"))]
 impl<'a, 'b> Session for IcmpSocket<'a, 'b> {}
 #[cfg(feature = "socket-udp")]
-impl<'a, 'b> Session for UdpSocket<'a> {}
+impl<'a, 'b> Session for UdpSocket<'a, 'b> {}
 #[cfg(feature = "socket-tcp")]
 impl<'a> Session for TcpSocket<'a> {}
 

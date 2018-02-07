@@ -17,18 +17,18 @@ pub struct PacketMetadata {
 
 /// An UDP packet ring buffer.
 #[derive(Debug)]
-pub struct SocketBuffer<'a> {
+pub struct SocketBuffer<'a, 'b> {
     metadata_buffer: RingBuffer<'a, PacketMetadata>,
-    payload_buffer: RingBuffer<'a, u8>,
+    payload_buffer: RingBuffer<'b, u8>,
 }
 
-impl<'a> SocketBuffer<'a> {
+impl<'a, 'b> SocketBuffer<'a, 'b> {
     /// Create a new socket buffer with the provided metadata and payload storage.
     ///
     /// Metadata storage limits the maximum _number_ of UDP packets in the buffer and payload
     /// storage limits the maximum _cumulated size_ of UDP packets.
-    pub fn new<MS, PS>(metadata_storage: MS, payload_storage: PS) -> SocketBuffer<'a>
-        where MS: Into<ManagedSlice<'a, PacketMetadata>>, PS: Into<ManagedSlice<'a, u8>>,
+    pub fn new<MS, PS>(metadata_storage: MS, payload_storage: PS) -> SocketBuffer<'a, 'b>
+        where MS: Into<ManagedSlice<'a, PacketMetadata>>, PS: Into<ManagedSlice<'b, u8>>,
     {
         SocketBuffer {
             metadata_buffer: RingBuffer::new(metadata_storage),
@@ -50,19 +50,19 @@ impl<'a> SocketBuffer<'a> {
 /// An UDP socket is bound to a specific endpoint, and owns transmit and receive
 /// packet buffers.
 #[derive(Debug)]
-pub struct UdpSocket<'a> {
+pub struct UdpSocket<'a, 'b: 'a> {
     pub(crate) meta: SocketMeta,
     endpoint:  IpEndpoint,
-    rx_buffer: SocketBuffer<'a>,
-    tx_buffer: SocketBuffer<'a>,
+    rx_buffer: SocketBuffer<'a, 'b>,
+    tx_buffer: SocketBuffer<'a, 'b>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
     hop_limit: Option<u8>
 }
 
-impl<'a> UdpSocket<'a> {
+impl<'a, 'b> UdpSocket<'a, 'b> {
     /// Create an UDP socket with the given buffers.
-    pub fn new(rx_buffer: SocketBuffer<'a>,
-               tx_buffer: SocketBuffer<'a>) -> UdpSocket<'a> {
+    pub fn new(rx_buffer: SocketBuffer<'a, 'b>,
+               tx_buffer: SocketBuffer<'a, 'b>) -> UdpSocket<'a, 'b> {
         UdpSocket {
             meta:      SocketMeta::default(),
             endpoint:  IpEndpoint::default(),
@@ -335,7 +335,7 @@ impl<'a> UdpSocket<'a> {
     }
 }
 
-impl<'a, 'b> Into<Socket<'a, 'b>> for UdpSocket<'a> {
+impl<'a, 'b> Into<Socket<'a, 'b>> for UdpSocket<'a, 'b> {
     fn into(self) -> Socket<'a, 'b> {
         Socket::Udp(self)
     }
@@ -351,13 +351,13 @@ mod test {
     use wire::ip::test::{MOCK_IP_ADDR_1, MOCK_IP_ADDR_2, MOCK_IP_ADDR_3};
     use super::*;
 
-    fn buffer(packets: usize) -> SocketBuffer<'static> {
+    fn buffer(packets: usize) -> SocketBuffer<'static, 'static> {
         SocketBuffer::new(vec![Default::default(); packets], vec![0; 16 * packets])
     }
 
-    fn socket(rx_buffer: SocketBuffer<'static>,
-              tx_buffer: SocketBuffer<'static>)
-            -> UdpSocket<'static> {
+    fn socket(rx_buffer: SocketBuffer<'static, 'static>,
+              tx_buffer: SocketBuffer<'static, 'static>)
+            -> UdpSocket<'static, 'static> {
         UdpSocket::new(rx_buffer, tx_buffer)
     }
 
