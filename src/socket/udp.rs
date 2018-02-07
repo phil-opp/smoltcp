@@ -43,6 +43,28 @@ impl<'a, 'b> SocketBuffer<'a, 'b> {
     fn is_empty(&self) -> bool {
         self.metadata_buffer.is_empty() || self.payload_buffer.is_empty()
     }
+
+    fn check_capacity(&self, required_size: usize) -> Result<()> {
+        if self.metadata_buffer.is_full() || self.payload_buffer.window() < required_size {
+            Err(Error::Exhausted)
+        } else {
+                Ok(())
+        }
+    }
+
+    fn prepare_for_insert(&mut self, required_size: usize) -> Result<()> {
+        self.check_capacity(required_size)?;
+
+        if self.payload_buffer.contiguous_window() < required_size {
+            // we reached the end of buffer, so the data does not fit without wrap-around
+            // -> insert dummy and try again
+            self.payload_buffer.enqueue_many(required_size);
+            let metadata_buf = self.metadata_buffer.enqueue_one()?;
+            metadata_buf.dummy = true;
+        }
+
+        self.check_capacity(required_size)
+    }
 }
 
 /// An User Datagram Protocol socket.
@@ -153,21 +175,7 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
         if self.endpoint.port == 0 { return Err(Error::Unaddressable) }
         if !endpoint.is_specified() { return Err(Error::Unaddressable) }
 
-        if self.tx_buffer.metadata_buffer.is_full() || self.tx_buffer.payload_buffer.window() < size {
-            return Err(Error::Exhausted);
-        }
-
-        if self.tx_buffer.payload_buffer.contiguous_window() < size {
-            // we reached the end of buffer, so the data does not fit without wrap-around
-            // -> insert dummy and try again
-            self.tx_buffer.payload_buffer.enqueue_many(size);
-            let metadata_buf = self.tx_buffer.metadata_buffer.enqueue_one()?;
-            metadata_buf.dummy = true;
-        }
-
-        if self.tx_buffer.metadata_buffer.is_full() || self.tx_buffer.payload_buffer.window() < size {
-            return Err(Error::Exhausted);
-        }
+        self.tx_buffer.prepare_for_insert(size)?;
 
         let payload_buf = self.tx_buffer.payload_buffer.enqueue_many(size);
         assert_eq!(payload_buf.len(), size);
@@ -235,22 +243,7 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
         debug_assert!(self.accepts(ip_repr, repr));
 
         let size = repr.payload.len();
-
-        if self.rx_buffer.metadata_buffer.is_full() || self.rx_buffer.payload_buffer.window() < size {
-            return Err(Error::Exhausted);
-        }
-
-        if self.rx_buffer.payload_buffer.contiguous_window() < size {
-            // we reached the end of buffer, so the data does not fit without wrap-around
-            // -> insert dummy and try again
-            self.rx_buffer.payload_buffer.enqueue_many(size);
-            let metadata_buf = self.rx_buffer.metadata_buffer.enqueue_one()?;
-            metadata_buf.dummy = true;
-        }
-
-        if self.rx_buffer.metadata_buffer.is_full() || self.rx_buffer.payload_buffer.window() < size {
-            return Err(Error::Exhausted);
-        }
+        self.rx_buffer.prepare_for_insert(size)?;
 
         let payload_buf = self.rx_buffer.payload_buffer.enqueue_many(size);
         assert_eq!(payload_buf.len(), size);
