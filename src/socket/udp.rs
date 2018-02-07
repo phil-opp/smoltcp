@@ -552,4 +552,113 @@ mod test {
         assert_eq!(ip_bound_socket.bind(LOCAL_END), Ok(()));
         assert!(!ip_bound_socket.accepts(&generate_bad_repr(), &REMOTE_UDP_REPR));
     }
+
+    #[test]
+    fn test_send_large_packet() {
+        // buffer(4) creates a payload buffer of size 16*4
+        let mut socket = socket(buffer(0), buffer(4));
+        assert_eq!(socket.bind(LOCAL_END), Ok(()));
+
+        let too_large = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefx";
+        assert_eq!(socket.send_slice(too_large, REMOTE_END), Err(Error::Exhausted));
+        assert_eq!(socket.send_slice(&too_large[..16*4], REMOTE_END), Ok(()));
+    }
+
+    #[test]
+    fn test_send_wraparound_1() {
+        let mut socket = socket(buffer(0), buffer(3));
+        assert_eq!(socket.bind(LOCAL_END), Ok(()));
+
+        let large = b"0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        assert_eq!(socket.send_slice(&large[..15], REMOTE_END), Ok(()));
+        assert_eq!(socket.send_slice(&large[..16*2], REMOTE_END), Ok(()));
+        // no dummy should be inserted because capacity does not suffice
+        assert_eq!(socket.send_slice(b"12", REMOTE_END), Err(Error::Exhausted));
+        assert_eq!(socket.tx_buffer.metadata_buffer.len(), 2);
+        assert_eq!(socket.tx_buffer.payload_buffer.len(), 16*3-1);
+
+        assert_eq!(socket.dispatch(|_| Ok(())), Ok(()));
+        // insert dummy
+        assert_eq!(socket.send_slice(&large[..16], REMOTE_END), Err(Error::Exhausted));
+        assert_eq!(socket.tx_buffer.metadata_buffer.len(), 2);
+        assert_eq!(socket.tx_buffer.payload_buffer.len(), 16*3-15);
+
+        assert_eq!(socket.dispatch(|_| Ok(())), Ok(()));
+        // packet dequed, but dummy is still there
+        assert_eq!(socket.tx_buffer.metadata_buffer.len(), 1);
+        assert_eq!(socket.tx_buffer.payload_buffer.len(), 1);
+
+        assert_eq!(socket.dispatch(|_| Ok(())), Err(Error::Exhausted));
+        assert_eq!(socket.tx_buffer.metadata_buffer.len(), 0);
+        assert_eq!(socket.tx_buffer.payload_buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_send_wraparound_2() {
+        let mut socket = socket(buffer(0), buffer(3));
+        assert_eq!(socket.bind(LOCAL_END), Ok(()));
+
+        let large = b"0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        assert_eq!(socket.send_slice(&large[..16*2], REMOTE_END), Ok(()));
+        assert_eq!(socket.send_slice(&large[..15], REMOTE_END), Ok(()));
+        // no dummy should be inserted because capacity does not suffice
+        assert_eq!(socket.send_slice(b"12", REMOTE_END), Err(Error::Exhausted));
+        assert_eq!(socket.tx_buffer.metadata_buffer.len(), 2);
+        assert_eq!(socket.tx_buffer.payload_buffer.len(), 16*3-1);
+
+        assert_eq!(socket.dispatch(|_| Ok(())), Ok(()));
+        // insert dummy and slice
+        assert_eq!(socket.send_slice(&large[..16*2], REMOTE_END), Ok(()));
+        assert_eq!(socket.tx_buffer.metadata_buffer.len(), 3);
+        assert_eq!(socket.tx_buffer.payload_buffer.len(), 16*3);
+
+        assert_eq!(socket.dispatch(|_| Ok(())), Ok(()));
+        // packet dequed, but dummy is still there
+        assert_eq!(socket.tx_buffer.metadata_buffer.len(), 2);
+        assert_eq!(socket.tx_buffer.payload_buffer.len(), 16*3-15);
+
+        assert_eq!(socket.dispatch(|_| Ok(())), Ok(()));
+        // dummy and packet dequeued
+        assert_eq!(socket.tx_buffer.metadata_buffer.len(), 0);
+        assert_eq!(socket.tx_buffer.payload_buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_process_wraparound() {
+        // every packet will be 6 bytes
+        let recv_buffer = SocketBuffer::new(vec![Default::default(); 4], vec![0; 6*3 + 2]);
+        let mut socket = socket(recv_buffer, buffer(0));
+        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+
+        assert_eq!(socket.process(&remote_ip_repr(), &REMOTE_UDP_REPR), Ok(()));
+        assert_eq!(socket.process(&remote_ip_repr(), &REMOTE_UDP_REPR), Ok(()));
+        assert_eq!(socket.process(&remote_ip_repr(), &REMOTE_UDP_REPR), Ok(()));
+        assert_eq!(socket.rx_buffer.metadata_buffer.len(), 3);
+        assert_eq!(socket.rx_buffer.payload_buffer.len(), 6*3);
+
+        assert_eq!(socket.process(&remote_ip_repr(), &REMOTE_UDP_REPR),
+                   Err(Error::Exhausted));
+        // no dummy inserted because capacity does not suffice
+        assert_eq!(socket.rx_buffer.metadata_buffer.len(), 3);
+        assert_eq!(socket.rx_buffer.payload_buffer.len(), 6*3);
+
+        assert_eq!(socket.recv(), Ok((&b"abcdef"[..], REMOTE_END)));
+        assert_eq!(socket.process(&remote_ip_repr(), &REMOTE_UDP_REPR), Ok(()));
+        // dummy inserted
+        assert_eq!(socket.rx_buffer.metadata_buffer.len(), 4);
+        assert_eq!(socket.rx_buffer.payload_buffer.len(), 6*3 + 2);
+
+        assert_eq!(socket.recv(), Ok((&b"abcdef"[..], REMOTE_END)));
+        assert_eq!(socket.recv(), Ok((&b"abcdef"[..], REMOTE_END)));
+        // two packets dequed, last packet and dummy still there
+        assert_eq!(socket.rx_buffer.metadata_buffer.len(), 2);
+        assert_eq!(socket.rx_buffer.payload_buffer.len(), 6 + 2);
+
+        assert_eq!(socket.recv(), Ok((&b"abcdef"[..], REMOTE_END)));
+        // everything dequed
+        assert_eq!(socket.rx_buffer.metadata_buffer.len(), 0);
+        assert_eq!(socket.rx_buffer.payload_buffer.len(), 0);
+    }
 }
