@@ -147,17 +147,11 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
     /// Enqueue a packet to be sent to a given remote endpoint, and return a pointer
     /// to its payload.
     ///
-    /// This function returns `Err(Error::Exhausted)` if the transmit buffer is full,
-    /// `Err(Error::Truncated)` if the requested size is larger than the payload buffer
-    /// size, and `Err(Error::Unaddressable)` if local or remote port, or remote address,
-    /// are unspecified.
+    /// This function returns `Err(Error::Exhausted)` if the transmit buffer is full and
+    /// `Err(Error::Unaddressable)` if local or remote port, or remote address are unspecified.
     pub fn send(&mut self, size: usize, endpoint: IpEndpoint) -> Result<&mut [u8]> {
         if self.endpoint.port == 0 { return Err(Error::Unaddressable) }
         if !endpoint.is_specified() { return Err(Error::Unaddressable) }
-
-        if self.tx_buffer.payload_buffer.capacity() < size {
-            return Err(Error::Truncated);
-        }
 
         if self.tx_buffer.metadata_buffer.is_full() || self.tx_buffer.payload_buffer.window() < size {
             return Err(Error::Exhausted);
@@ -241,10 +235,6 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
         debug_assert!(self.accepts(ip_repr, repr));
 
         let size = repr.payload.len();
-
-        if self.rx_buffer.payload_buffer.capacity() < size {
-            return Err(Error::Truncated);
-        }
 
         if self.rx_buffer.metadata_buffer.is_full() || self.rx_buffer.payload_buffer.window() < size {
             return Err(Error::Exhausted);
@@ -444,14 +434,6 @@ mod test {
     }
 
     #[test]
-    fn test_send_truncated() {
-        let mut socket = socket(buffer(0), buffer(1));
-        assert_eq!(socket.bind(LOCAL_END), Ok(()));
-
-        assert_eq!(socket.send_slice(&[0; 32][..], REMOTE_END), Err(Error::Truncated));
-    }
-
-    #[test]
     fn test_send_dispatch() {
         let mut socket = socket(buffer(0), buffer(1));
         assert_eq!(socket.bind(LOCAL_END), Ok(()));
@@ -511,17 +493,6 @@ mod test {
         let mut slice = [0; 4];
         assert_eq!(socket.recv_slice(&mut slice[..]), Ok((4, REMOTE_END)));
         assert_eq!(&slice, b"abcd");
-    }
-
-    #[test]
-    fn test_recv_truncated_packet() {
-        let mut socket = socket(buffer(1), buffer(0));
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
-
-        let udp_repr = UdpRepr { payload: &[0; 100][..], ..REMOTE_UDP_REPR };
-        assert!(socket.accepts(&remote_ip_repr(), &udp_repr));
-        assert_eq!(socket.process(&remote_ip_repr(), &udp_repr),
-                   Err(Error::Truncated));
     }
 
     #[test]
