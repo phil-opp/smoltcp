@@ -61,6 +61,8 @@ impl<'a, 'b> SocketBuffer<'a, 'b> {
             self.payload_buffer.enqueue_many(required_size);
             let metadata_buf = self.metadata_buffer.enqueue_one()?;
             metadata_buf.dummy = true;
+            metadata_buf.payload_size = required_size;
+            metadata_buf.endpoint = IpEndpoint::default();
         }
 
         self.check_capacity(required_size)
