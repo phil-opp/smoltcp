@@ -202,9 +202,9 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
             metadata_buf = *self.rx_buffer.metadata_buffer.dequeue_one()?;
         }
 
-        assert!(!metadata_buf.dummy);
+        debug_assert!(!metadata_buf.dummy);
         let payload_buf = self.rx_buffer.payload_buffer.dequeue_many(metadata_buf.payload_size);
-        assert_eq!(metadata_buf.payload_size, payload_buf.len()); // ensured by inserting logic
+        debug_assert_eq!(metadata_buf.payload_size, payload_buf.len()); // ensured by inserting logic
 
         net_trace!("{}:{}:{}: receive {} buffered octets",
                    self.meta.handle, self.endpoint,
@@ -288,7 +288,7 @@ impl<'a, 'b> UdpSocket<'a, 'b> {
         }
 
         metadata_buffer.dequeue_one_with(move |metadata_buf| {
-            assert!(!metadata_buf.dummy);
+            debug_assert!(!metadata_buf.dummy);
             payload_buffer.dequeue_many_with(|payload_buf| {
                 let payload_buf = &payload_buf[..metadata_buf.payload_size];
 
