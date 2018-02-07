@@ -72,7 +72,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         self.capacity() - self.len()
     }
 
-    /// Return the number of contiguos elements that can be added to the ring buffer.
+    /// Return the largest number of elements that can be added to the buffer
+    /// without wrapping around (i.e. in a single `enqueue_many` call).
     pub fn contiguous_window(&self) -> usize {
         cmp::min(self.window(), self.capacity() - self.write_at())
     }
