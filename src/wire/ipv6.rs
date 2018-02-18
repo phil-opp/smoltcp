@@ -171,6 +171,20 @@ impl Address {
     }
 }
 
+#[cfg(feature = "std")]
+impl From<::std::net::Ipv6Addr> for Address {
+    fn from(x: ::std::net::Ipv6Addr) -> Address {
+        Address(x.octets())
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<Address> for ::std::net::Ipv6Addr {
+    fn from(Address(x): Address) -> ::std::net::Ipv6Addr {
+        x.into()
+    }
+}
+
 impl fmt::Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.is_ipv4_mapped() {
@@ -288,7 +302,7 @@ impl fmt::Display for Cidr {
 }
 
 /// A read/write wrapper around an Internet Protocol version 6 packet buffer.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Packet<T: AsRef<[u8]>> {
     buffer: T
 }
@@ -524,9 +538,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let data = self.buffer.as_mut();
         data[field::DST_ADDR].copy_from_slice(value.as_bytes());
     }
-}
 
-impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
     /// Return a mutable pointer to the payload.
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
@@ -545,6 +557,12 @@ impl<'a, T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&'a T> {
                 Ok(())
             }
         }
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_ref()
     }
 }
 

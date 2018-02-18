@@ -66,7 +66,7 @@ impl cmp::PartialOrd for SeqNumber {
 }
 
 /// A read/write wrapper around a Transmission Control Protocol packet buffer.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Packet<T: AsRef<[u8]>> {
     buffer: T
 }
@@ -492,9 +492,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         };
         self.set_checksum(checksum)
     }
-}
 
-impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
     /// Return a pointer to the options.
     #[inline]
     pub fn options_mut(&mut self) -> &mut [u8] {
@@ -509,6 +507,12 @@ impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
         let header_len = self.header_len() as usize;
         let data = self.buffer.as_mut();
         &mut data[header_len..]
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_ref()
     }
 }
 

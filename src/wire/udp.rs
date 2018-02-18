@@ -7,7 +7,7 @@ use super::{IpProtocol, IpAddress};
 use super::ip::checksum;
 
 /// A read/write wrapper around an User Datagram Protocol packet buffer.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Packet<T: AsRef<[u8]>> {
     buffer: T
 }
@@ -180,15 +180,19 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         // so no action is necessary on the remote end.
         self.set_checksum(if checksum == 0 { 0xffff } else { checksum })
     }
-}
 
-impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
     /// Return a mutable pointer to the payload.
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let length = self.len();
         let data = self.buffer.as_mut();
         &mut data[field::PAYLOAD(length)]
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_ref()
     }
 }
 

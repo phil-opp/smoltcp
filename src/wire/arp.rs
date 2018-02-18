@@ -21,7 +21,7 @@ enum_with_unknown! {
 }
 
 /// A read/write wrapper around an Address Resolution Protocol packet buffer.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Packet<T: AsRef<[u8]>> {
     buffer: T
 }
@@ -239,6 +239,12 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
         let data = self.buffer.as_mut();
         data[field::TPA(hardware_len, protocol_len)].copy_from_slice(value)
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_ref()
     }
 }
 

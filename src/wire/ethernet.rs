@@ -24,7 +24,7 @@ impl fmt::Display for EtherType {
 }
 
 /// A six-octet Ethernet II address.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
 pub struct Address(pub [u8; 6]);
 
 impl Address {
@@ -77,7 +77,7 @@ impl fmt::Display for Address {
 }
 
 /// A read/write wrapper around an Ethernet II frame buffer.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Frame<T: AsRef<[u8]>> {
     buffer: T
 }
@@ -187,14 +187,18 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::ETHERTYPE], value.into())
     }
-}
 
-impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Frame<&'a mut T> {
     /// Return a mutable pointer to the payload.
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
         &mut data[field::PAYLOAD]
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Frame<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_ref()
     }
 }
 

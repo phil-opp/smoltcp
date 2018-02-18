@@ -69,7 +69,6 @@ enum_with_unknown! {
     }
 }
 
-
 impl fmt::Display for DstUnreachable {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -93,8 +92,58 @@ impl fmt::Display for DstUnreachable {
     }
 }
 
+enum_with_unknown! {
+    /// Internet protocol control message subtype for the type "Parameter Problem".
+    pub doc enum ParamProblem(u8) {
+        /// Erroneous header field encountered.
+        ErroneousHdrField  = 0,
+        /// Unrecognized Next Header type encountered.
+        UnrecognizedNxtHdr = 1,
+        /// Unrecognized IPv6 option encountered.
+        UnrecognizedOption = 2
+    }
+}
+
+impl fmt::Display for ParamProblem {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &ParamProblem::ErroneousHdrField  =>
+                write!(f, "erroneous header field."),
+            &ParamProblem::UnrecognizedNxtHdr =>
+                write!(f, "unrecognized next header type."),
+            &ParamProblem::UnrecognizedOption =>
+                write!(f, "unrecognized IPv6 option."),
+            &ParamProblem::Unknown(id) =>
+                write!(f, "{}", id)
+        }
+    }
+}
+
+enum_with_unknown! {
+    /// Internet protocol control message subtype for the type "Time Exceeded".
+    pub doc enum TimeExceeded(u8) {
+        /// Hop limit exceeded in transit.
+        HopLimitExceeded    = 0,
+        /// Fragment reassembly time exceeded.
+        FragReassemExceeded = 1
+    }
+}
+
+impl fmt::Display for TimeExceeded {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &TimeExceeded::HopLimitExceeded =>
+                write!(f, "hop limit exceeded in transit"),
+            &TimeExceeded::FragReassemExceeded =>
+                write!(f, "fragment reassembly time exceeded"),
+            &TimeExceeded::Unknown(id) =>
+                write!(f, "{}", id)
+        }
+    }
+}
+
 /// A read/write wrapper around an Internet Control Message Protocol version 6 packet buffer.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Packet<T: AsRef<[u8]>> {
     buffer: T
 }
@@ -308,15 +357,19 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         };
         self.set_checksum(checksum)
     }
-}
 
-impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
     /// Return a mutable pointer to the type-specific data.
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let range = self.header_len()..;
         let data = self.buffer.as_mut();
         &mut data[range]
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_ref()
     }
 }
 
@@ -334,10 +387,12 @@ pub enum Repr<'a> {
         data:   &'a [u8]
     },
     TimeExceeded {
+        reason: TimeExceeded,
         header: Ipv6Repr,
         data:   &'a [u8]
     },
     ParamProblem {
+        reason:  ParamProblem,
         pointer: u32,
         header:  Ipv6Repr,
         data:    &'a [u8]
@@ -398,16 +453,18 @@ impl<'a> Repr<'a> {
                     data: payload
                 })
             },
-            (Message::TimeExceeded, 0) => {
+            (Message::TimeExceeded, code) => {
                 let (payload, repr) = create_packet_from_payload(packet)?;
                 Ok(Repr::TimeExceeded {
+                    reason: TimeExceeded::from(code),
                     header: repr,
                     data: payload
                 })
             },
-            (Message::ParamProblem, 0) => {
+            (Message::ParamProblem, code) => {
                 let (payload, repr) = create_packet_from_payload(packet)?;
                 Ok(Repr::ParamProblem {
+                    reason: ParamProblem::from(code),
                     pointer: packet.param_problem_ptr(),
                     header: repr,
                     data: payload
@@ -473,16 +530,16 @@ impl<'a> Repr<'a> {
                 emit_contained_packet(packet.payload_mut(), header, &data);
             },
 
-            &Repr::TimeExceeded { header, data } => {
+            &Repr::TimeExceeded { reason, header, data } => {
                 packet.set_msg_type(Message::TimeExceeded);
-                packet.set_msg_code(0);
+                packet.set_msg_code(reason.into());
 
                 emit_contained_packet(packet.payload_mut(), header, &data);
             },
 
-            &Repr::ParamProblem { pointer, header, data } => {
+            &Repr::ParamProblem { reason, pointer, header, data } => {
                 packet.set_msg_type(Message::ParamProblem);
-                packet.set_msg_code(0);
+                packet.set_msg_code(reason.into());
                 packet.set_param_problem_ptr(pointer);
 
                 emit_contained_packet(packet.payload_mut(), header, &data);

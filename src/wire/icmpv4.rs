@@ -166,7 +166,7 @@ enum_with_unknown! {
 }
 
 /// A read/write wrapper around an Internet Control Message Protocol version 4 packet buffer.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Packet<T: AsRef<[u8]>> {
     buffer: T
 }
@@ -355,6 +355,12 @@ impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
         let range = self.header_len()..;
         let data = self.buffer.as_mut();
         &mut data[range]
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_ref()
     }
 }
 
